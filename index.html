@@ -1,0 +1,1104 @@
+<!DOCTYPE html>
+<html lang="zh-HK" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="description" content="全香港 EV 停車場搜尋，即時空位一目了然" />
+  <title>香港 EV 泊車</title>
+
+  <!-- PWA manifest injected at runtime (single-file friendly) -->
+  <link rel="manifest" id="pwa-manifest" />
+  <link rel="apple-touch-icon" id="apple-icon" />
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            surface: { DEFAULT: '#0f172a', card: '#1e293b', muted: '#334155' }
+          }
+        }
+      }
+    };
+  </script>
+
+  <style>
+    /* Leaflet + mobile tweaks */
+    #map { touch-action: none; }
+    .leaflet-container { background: #0f172a; font-family: inherit; }
+    .marker-pin {
+      width: 28px; height: 28px; border-radius: 50% 50% 50% 0;
+      transform: rotate(-45deg); border: 2px solid #fff;
+      box-shadow: 0 2px 8px rgba(0,0,0,.45);
+    }
+    .marker-inner {
+      width: 100%; height: 100%; border-radius: 50% 50% 50% 0;
+      transform: rotate(45deg); display: flex; align-items: center;
+      justify-content: center; font-size: 12px; font-weight: 700;
+    }
+    .sheet-enter { animation: slideUp .25s ease-out; }
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .safe-bottom { padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+    .safe-top { padding-top: max(0.5rem, env(safe-area-inset-top)); }
+    /* Hide scrollbar on list but keep scroll */
+    .hide-scroll::-webkit-scrollbar { display: none; }
+    .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+  </style>
+</head>
+
+<body class="h-full bg-slate-950 text-slate-100 overflow-hidden">
+
+  <!-- ===== APP SHELL ===== -->
+  <div id="app" class="h-full flex flex-col relative">
+
+    <!-- Header -->
+    <header class="safe-top z-30 bg-slate-950/90 backdrop-blur border-b border-slate-800 px-3 py-2 shrink-0">
+      <div class="flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <h1 class="text-lg font-bold tracking-tight truncate">⚡ 香港 EV 泊車</h1>
+          <p class="text-xs text-slate-400 truncate">全香港</p>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button id="btn-locate" type="button" title="我嘅位置"
+            class="tap-target w-11 h-11 rounded-xl bg-slate-800 active:bg-slate-700 flex items-center justify-center text-lg">
+            📍
+          </button>
+          <button id="btn-refresh" type="button" title="更新資料"
+            class="tap-target w-11 h-11 rounded-xl bg-emerald-600 active:bg-emerald-500 flex items-center justify-center text-lg">
+            ↻
+          </button>
+        </div>
+      </div>
+
+      <!-- Search -->
+      <div class="relative mt-2">
+        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">🔍</span>
+        <input id="search-input" type="search" enterkeyhint="search" autocomplete="off"
+          placeholder="搜尋地區或停車場，例如：尖沙咀、觀塘…"
+          class="w-full pl-9 pr-9 py-2.5 rounded-xl bg-slate-800 border border-slate-700
+                 text-sm text-slate-100 placeholder:text-slate-500
+                 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600" />
+        <button id="search-clear" type="button" hidden
+          class="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full
+                 bg-slate-700 text-slate-400 text-sm leading-none active:bg-slate-600"
+          aria-label="清除搜尋">×</button>
+      </div>
+
+      <!-- Filters -->
+      <div class="flex gap-2 mt-2 overflow-x-auto hide-scroll pb-1">
+        <label class="filter-chip shrink-0">
+          <input type="checkbox" id="filter-ev" checked class="sr-only peer" />
+          <span class="chip peer-checked:bg-emerald-600 peer-checked:border-emerald-500">⚡ 淨係 EV</span>
+        </label>
+        <label class="filter-chip shrink-0">
+          <input type="checkbox" id="filter-near" class="sr-only peer" />
+          <span class="chip peer-checked:bg-blue-600 peer-checked:border-blue-500">📍 附近</span>
+        </label>
+        <label class="filter-chip shrink-0">
+          <input type="checkbox" id="filter-spaces" class="sr-only peer" />
+          <span class="chip peer-checked:bg-amber-600 peer-checked:border-amber-500">🅿️ 有空位</span>
+        </label>
+      </div>
+      <p id="status-bar" class="text-xs text-slate-500 mt-1 truncate">載入中…</p>
+    </header>
+
+    <!-- Map -->
+    <div id="map" class="flex-1 min-h-0 z-0"></div>
+
+    <!-- Bottom list (peek) -->
+    <div id="list-panel"
+      class="safe-bottom z-20 bg-slate-900/95 backdrop-blur border-t border-slate-700 rounded-t-2xl shadow-2xl
+             max-h-[42vh] flex flex-col transition-all duration-300">
+      <button id="list-handle" type="button" class="w-full py-2 flex flex-col items-center" aria-label="展開列表">
+        <span class="w-10 h-1 rounded-full bg-slate-600 mb-1"></span>
+        <span id="list-summary" class="text-sm font-medium text-slate-300">0 個停車場</span>
+      </button>
+      <div id="list-scroll" class="overflow-y-auto hide-scroll px-3 pb-3 space-y-2 flex-1 min-h-0"></div>
+    </div>
+
+    <!-- Detail sheet -->
+    <div id="detail-overlay" class="hidden fixed inset-0 z-40 bg-black/60" aria-hidden="true"></div>
+    <div id="detail-sheet"
+      class="hidden fixed inset-x-0 bottom-0 z-50 bg-slate-900 border-t border-slate-700 rounded-t-2xl
+             max-h-[85vh] overflow-y-auto safe-bottom sheet-enter">
+      <div class="p-4 space-y-4" id="detail-content"></div>
+    </div>
+
+    <!-- Offline banner -->
+    <div id="offline-banner"
+      class="hidden fixed top-14 left-3 right-3 z-50 bg-amber-900/90 border border-amber-700 text-amber-100
+             text-sm px-3 py-2 rounded-xl text-center">
+      離線中 — 顯示快取資料
+    </div>
+  </div>
+
+  <!-- Shared chip styles -->
+  <style>
+    .filter-chip .chip {
+      display: inline-block; padding: 0.4rem 0.75rem; border-radius: 9999px;
+      font-size: 0.8rem; font-weight: 600; border: 1px solid #475569;
+      background: #1e293b; color: #cbd5e1; cursor: pointer; white-space: nowrap;
+    }
+    .tap-target { min-width: 44px; min-height: 44px; }
+  </style>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+  <script>
+  /* =============================================================================
+   * HK EV Park — v1 single-file PWA
+   * Solves: "arrived but no parking / broken charger" via map + gov vacancy + reports
+   * ============================================================================= */
+
+  const APP_VERSION = '1.0.0';
+  const STORAGE_REPORTS = 'hkev_reports_v1';
+  const STORAGE_CACHE = 'hkev_vacancy_cache_v1';
+  const STORAGE_CARPARKS = 'hkev_carparks_cache_v2';
+  const MAP_MARKER_LIMIT = 80;
+  const NEAR_RADIUS_KM = 3;
+  const NEARBY_BOOTSTRAP_COUNT = 10;
+  const STORAGE_LAST_POS = 'hkev_last_pos';
+  const REFRESH_MS = 120_000; // 2 min auto-refresh
+  const API_BASE = 'https://api.data.gov.hk/v1/carpark-info-vacancy';
+
+  // Optional basic gate: share link like ?key=ourgroup — stored in session
+  const URL_KEY = new URLSearchParams(location.search).get('key');
+  if (URL_KEY) sessionStorage.setItem('hkev_key', URL_KEY);
+
+  // 全香港範圍（政府 API extent：左經、南緯、右經、北緯）
+  const HK_BOUNDS = { west: 113.83, south: 22.15, east: 114.41, north: 22.56 };
+  const MAP_CENTER = [22.352, 114.140];
+  const MAP_ZOOM = 11;
+
+  // 已知地點備註／覆寫（govId → 覆寫欄位）
+  const CURATED_OVERRIDES = {
+    '123': { name: '觀塘道350號停車場', nameEn: 'KTR350', note: '大型公共 EV 充電站 — 到場再確認邊個充電位可用。' },
+    '81': { nameEn: 'Manulife Place', note: '寫字樓停車場，有專用 EV 車位。' },
+    '12': { nameEn: 'Amoy Plaza', note: '商場停車場，5 個 EV 位。消費可享免費泊車。' },
+    'tdc332p1': { hasEV: true, nameEn: 'apm Car Park', note: '大型商場，現場有 EV 充電（政府 API 未標示）。到場再確認。' },
+    '79': { note: '海旁寫字樓，有 EV 充電。' },
+    '77': { nameEn: 'Kingston International Center', note: '近 MegaBox 一帶，EV 位有限。' },
+    '30': { name: '德福廣場 D', nameEn: 'Telford Plaza D', note: '九龍灣商場群，現場有 EV 設施。' },
+    '31': { name: '德福廣場 I', nameEn: 'Telford Plaza I', note: '德福廣場停車場群組之一。' },
+    '32': { name: '德福廣場 II', nameEn: 'Telford Plaza II', note: '德福廣場停車場群組之一。' },
+    '39': { nameEn: 'Choi Tak Estate', note: '屋邨停車場，有 EV 充電。' },
+    '118': { name: '德朗邨', nameEn: 'Tak Long Estate', note: '近啟德，政府數據顯示有 15 個 EV 位。' },
+    'tdc8p10': { hasEV: true, nameEn: 'Elements', note: '圓方商場，現場有 EV 充電（政府 API 未標示）。到場再確認。' }
+  };
+
+  // 地區搜尋索引（名稱 + 地理範圍）
+  const AREA_INDEX = [
+    { label: '中環', names: ['中環', 'central'], bounds: { south: 22.278, west: 114.150, north: 22.290, east: 114.165 } },
+    { label: '金鐘', names: ['金鐘', 'admiralty'], bounds: { south: 22.274, west: 114.162, north: 22.282, east: 114.172 } },
+    { label: '灣仔', names: ['灣仔', 'wanchai', 'wan chai'], bounds: { south: 22.272, west: 114.168, north: 22.285, east: 114.180 } },
+    { label: '銅鑼灣', names: ['銅鑼灣', 'causeway bay', 'cwb'], bounds: { south: 22.276, west: 114.180, north: 22.288, east: 114.195 } },
+    { label: '北角', names: ['北角', 'north point'], bounds: { south: 22.286, west: 114.192, north: 22.298, east: 114.205 } },
+    { label: '鰂魚涌', names: ['鰂魚涌', 'quarry bay'], bounds: { south: 22.284, west: 114.205, north: 22.295, east: 114.218 } },
+    { label: '太古', names: ['太古', '太古城', 'taikoo'], bounds: { south: 22.283, west: 114.210, north: 22.292, east: 114.222 } },
+    { label: '香港仔', names: ['香港仔', 'aberdeen'], bounds: { south: 22.240, west: 114.150, north: 22.255, east: 114.165 } },
+    { label: '尖沙咀', names: ['尖沙咀', '尖沙嘴', 'tsim sha tsui', 'tst'], bounds: { south: 22.290, west: 114.158, north: 22.308, east: 114.185 } },
+    { label: '佐敦', names: ['佐敦', 'jordan'], bounds: { south: 22.302, west: 114.168, north: 22.312, east: 114.176 } },
+    { label: '油麻地', names: ['油麻地', 'yau ma tei'], bounds: { south: 22.305, west: 114.168, north: 22.318, east: 114.178 } },
+    { label: '旺角', names: ['旺角', 'mong kok', 'mk'], bounds: { south: 22.312, west: 114.165, north: 22.328, east: 114.178 } },
+    { label: '油尖旺', names: ['油尖旺', 'yau tsim mong'], bounds: { south: 22.290, west: 114.158, north: 22.328, east: 114.185 } },
+    { label: '深水埗', names: ['深水埗', 'sham shui po', 'ssp'], bounds: { south: 22.325, west: 114.152, north: 22.342, east: 114.168 } },
+    { label: '長沙灣', names: ['長沙灣', 'cheung sha wan'], bounds: { south: 22.332, west: 114.148, north: 22.348, east: 114.162 } },
+    { label: '九龍塘', names: ['九龍塘', 'kowloon tong', 'klt'], bounds: { south: 22.330, west: 114.172, north: 22.345, east: 114.188 } },
+    { label: '紅磡', names: ['紅磡', 'hung hom'], bounds: { south: 22.298, west: 114.178, north: 22.312, east: 114.192 } },
+    { label: '土瓜灣', names: ['土瓜灣', 'to kwa wan'], bounds: { south: 22.312, west: 114.185, north: 22.325, east: 114.198 } },
+    { label: '九龍城', names: ['九龍城', 'kowloon city'], bounds: { south: 22.318, west: 114.178, north: 22.335, east: 114.195 } },
+    { label: '啟德', names: ['啟德', 'kai tak'], bounds: { south: 22.318, west: 114.195, north: 22.338, east: 114.215 } },
+    { label: '觀塘', names: ['觀塘', 'kwun tong'], bounds: { south: 22.305, west: 114.210, north: 22.328, east: 114.235 } },
+    { label: '九龍灣', names: ['九龍灣', 'kowloon bay'], bounds: { south: 22.318, west: 114.200, north: 22.330, east: 114.222 } },
+    { label: '牛頭角', names: ['牛頭角', 'ngau tau kok'], bounds: { south: 22.322, west: 114.210, north: 22.332, east: 114.222 } },
+    { label: '藍田', names: ['藍田', 'lam tin'], bounds: { south: 22.302, west: 114.228, north: 22.315, east: 114.242 } },
+    { label: '油塘', names: ['油塘', 'yau tong'], bounds: { south: 22.292, west: 114.232, north: 22.305, east: 114.245 } },
+    { label: '黃大仙', names: ['黃大仙', 'wong tai sin'], bounds: { south: 22.335, west: 114.188, north: 22.348, east: 114.202 } },
+    { label: '鑽石山', names: ['鑽石山', 'diamond hill'], bounds: { south: 22.338, west: 114.198, north: 22.352, east: 114.212 } },
+    { label: '新蒲崗', names: ['新蒲崗', 'san po kong'], bounds: { south: 22.332, west: 114.192, north: 22.342, east: 114.202 } },
+    { label: '沙田', names: ['沙田', 'sha tin', 'st'], bounds: { south: 22.365, west: 114.175, north: 22.415, east: 114.220 } },
+    { label: '大圍', names: ['大圍', 'tai wai'], bounds: { south: 22.358, west: 114.168, north: 22.378, east: 114.185 } },
+    { label: '馬鞍山', names: ['馬鞍山', 'ma on shan'], bounds: { south: 22.410, west: 114.218, north: 22.438, east: 114.245 } },
+    { label: '大埔', names: ['大埔', 'tai po'], bounds: { south: 22.430, west: 114.155, north: 22.465, east: 114.195 } },
+    { label: '粉嶺', names: ['粉嶺', 'fanling', 'fan ling'], bounds: { south: 22.478, west: 114.125, north: 22.505, east: 114.155 } },
+    { label: '上水', names: ['上水', 'sheung shui'], bounds: { south: 22.492, west: 114.118, north: 22.515, east: 114.142 } },
+    { label: '元朗', names: ['元朗', 'yuen long'], bounds: { south: 22.430, west: 114.015, north: 22.465, east: 114.048 } },
+    { label: '屯門', names: ['屯門', 'tuen mun'], bounds: { south: 22.375, west: 113.958, north: 22.415, east: 114.000 } },
+    { label: '天水圍', names: ['天水圍', 'tin shui wai'], bounds: { south: 22.448, west: 113.998, north: 22.472, east: 114.028 } },
+    { label: '荃灣', names: ['荃灣', 'tsuen wan'], bounds: { south: 22.355, west: 114.105, north: 22.385, east: 114.130 } },
+    { label: '葵涌', names: ['葵涌', 'kwai chung', 'kwai fong', '葵芳'], bounds: { south: 22.352, west: 114.118, north: 22.372, east: 114.142 } },
+    { label: '青衣', names: ['青衣', 'tsing yi'], bounds: { south: 22.338, west: 114.078, north: 22.362, east: 114.108 } },
+    { label: '東涌', names: ['東涌', 'tung chung'], bounds: { south: 22.275, west: 113.918, north: 22.295, east: 113.955 } },
+    { label: '將軍澳', names: ['將軍澳', 'tseung kwan o', 'tko'], bounds: { south: 22.300, west: 114.248, north: 22.325, east: 114.275 } },
+    { label: '坑口', names: ['坑口', 'hang hau'], bounds: { south: 22.312, west: 114.255, north: 22.328, east: 114.270 } },
+    { label: '西九龍', names: ['西九龍', '西九', 'west kowloon'], bounds: { south: 22.298, west: 114.148, north: 22.308, east: 114.165 } }
+  ];
+
+  // 政府 API 冇收錄嘅 EV 停車場
+  const CURATED_EXTRAS = [
+    {
+      id: 'megabox',
+      govId: null,
+      name: 'MegaBox 停車場',
+      nameEn: 'MegaBox Car Park',
+      address: '宏照道38號，九龍灣',
+      lat: 22.319389, lng: 114.208056,
+      hasEV: true, evSpaces: null,
+      note: '熱門商場，有 EV 充電。呢個地點冇政府即時空位數據。',
+      district: '觀塘區',
+      subDistrict: '九龍灣'
+    }
+  ];
+
+  // 內嵌 EV 種子資料 — 無需等 API 即可顯示附近站點
+  const SEED_EV_PARKS = [
+    { id:'123', govId:'123', name:'觀塘道350號停車場', address:'觀塘道350號，觀塘', lat:22.3150437, lng:114.2179817, hasEV:true, evSpaces:142, district:'觀塘區' },
+    { id:'81', govId:'81', name:'宏利廣場', address:'觀塘道348號，觀塘', lat:22.3149246, lng:114.21706438, hasEV:true, evSpaces:8, district:'觀塘區' },
+    { id:'12', govId:'12', name:'淘大商場', address:'牛頭角道77號，九龍灣', lat:22.32470074, lng:114.21675324, hasEV:true, evSpaces:5, district:'觀塘區', subDistrict:'九龍灣' },
+    { id:'tdc332p1', govId:'tdc332p1', name:'apm 停車場', address:'觀塘道418號，觀塘', lat:22.31231227, lng:114.22514827, hasEV:true, district:'觀塘區' },
+    { id:'79', govId:'79', name:'NEO', address:'海濱道123號，觀塘', lat:22.31411072, lng:114.21644211, hasEV:true, district:'觀塘區' },
+    { id:'77', govId:'77', name:'嘉達國際中心', address:'宏照道19號，九龍灣', lat:22.32361547, lng:114.20924917, hasEV:true, evSpaces:2, district:'觀塘區', subDistrict:'九龍灣' },
+    { id:'30', govId:'30', name:'德福廣場 D', address:'偉業街33號，九龍灣', lat:22.32228903, lng:114.21204329, hasEV:true, district:'觀塘區' },
+    { id:'31', govId:'31', name:'德福廣場 I', address:'偉業街33號，九龍灣', lat:22.32268602, lng:114.21353459, hasEV:true, district:'觀塘區' },
+    { id:'32', govId:'32', name:'德福廣場 II', address:'偉業街33號，九龍灣', lat:22.32135609, lng:114.21326637, hasEV:true, district:'觀塘區' },
+    { id:'39', govId:'39', name:'彩德邨', address:'彩德邨，牛頭角', lat:22.32957367, lng:114.21329856, hasEV:true, district:'觀塘區' },
+    { id:'118', govId:'118', name:'德朗邨', address:'承啟道，啟德', lat:22.32879957, lng:114.20429707, hasEV:true, evSpaces:15, district:'九龍城區' },
+    { id:'27', govId:'27', name:'油麗商場停車場', address:'油塘道9號，油塘', lat:22.29851205, lng:114.23740089, hasEV:true, district:'觀塘區' },
+    { id:'38', govId:'38', name:'大本型停車場', address:'高超道38號，油塘', lat:22.29598076, lng:114.23869371, hasEV:true, evSpaces:11, district:'觀塘區' },
+    { id:'88', govId:'88', name:'油塘仁宇圍8號公眾停車場', address:'油塘仁宇圍8號', lat:22.292238, lng:114.236683, hasEV:true, evSpaces:16, district:'觀塘區' },
+    { id:'78', govId:'78', name:'寶光商業中心', address:'太子道東698號，新蒲崗', lat:22.33448116, lng:114.1981709, hasEV:true, evSpaces:4, district:'黃大仙區' },
+    { id:'104', govId:'104', name:'AIRSIDE', address:'協調道2號，啟德', lat:22.33124094, lng:114.198246, hasEV:true, evSpaces:851, district:'黃大仙區' },
+    { id:'124', govId:'124', name:'主場館停車場', address:'承啟道38-39號，啟德體育園', lat:22.32216993, lng:114.1980958, hasEV:true, evSpaces:334, district:'九龍城區' },
+    { id:'125', govId:'125', name:'體藝館停車場', address:'承啟道38-39號，啟德體育園', lat:22.32545005, lng:114.19669569, hasEV:true, evSpaces:236, district:'九龍城區' },
+    { id:'128', govId:'128', name:'The Burrow', address:'五芳街15-17號，新蒲崗', lat:22.3381653, lng:114.199945, hasEV:true, district:'黃大仙區' },
+    { id:'tdc8p10', govId:'tdc8p10', name:'圓方停車場', address:'尖沙咀柯士甸道西1號', lat:22.30493235, lng:114.16157933, hasEV:true, district:'油尖旺區' }
+  ];
+
+  let CARPARKS = [];
+
+  /* ----- State ----- */
+  let map, markersLayer, userMarker, areaLayer;
+  let userPos = null;
+  let vacancyMap = {};   // govId -> vacancy object
+  let reports = loadReports();
+  let listExpanded = false;
+  let selectedId = null;
+  let refreshTimer = null;
+  let lastFetchTime = null;
+  let fullDataReady = false;
+  let bootstrapActive = false;
+
+  /* ----- PWA: manifest + icons ----- */
+  function setupPWA() {
+    const iconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+      <rect width="512" height="512" rx="96" fill="#059669"/>
+      <text x="256" y="300" text-anchor="middle" font-size="200" fill="white">⚡</text>
+    </svg>`;
+    const iconUrl = 'data:image/svg+xml,' + encodeURIComponent(iconSvg);
+    document.getElementById('apple-icon').href = iconUrl;
+
+    const manifest = {
+      name: '香港 EV 泊車',
+      short_name: 'EV 泊車',
+      description: '全香港 EV 停車場即時空位',
+      start_url: location.origin + location.pathname + location.search,
+      display: 'standalone',
+      background_color: '#0f172a',
+      theme_color: '#059669',
+      orientation: 'portrait-primary',
+      icons: [
+        { src: iconUrl, sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }
+      ]
+    };
+    const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+    document.getElementById('pwa-manifest').href = URL.createObjectURL(manifestBlob);
+
+    // Inline service worker via Blob URL
+    const swCode = `
+      const CACHE = 'hkev-static-v${APP_VERSION}';
+      const PRECACHE = [
+        'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
+        'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+        'https://cdn.tailwindcss.com'
+      ];
+      self.addEventListener('install', e => {
+        e.waitUntil(caches.open(CACHE).then(c => c.addAll(PRECACHE).catch(() => {})));
+        self.skipWaiting();
+      });
+      self.addEventListener('activate', e => {
+        e.waitUntil(self.clients.claim());
+      });
+      self.addEventListener('fetch', e => {
+        const url = e.request.url;
+        // Cache CDN assets; network-first for API with cache fallback
+        if (url.includes('api.data.gov.hk')) {
+          e.respondWith(
+            fetch(e.request).then(res => {
+              const clone = res.clone();
+              caches.open(CACHE).then(c => c.put(e.request, clone));
+              return res;
+            }).catch(() => caches.match(e.request))
+          );
+          return;
+        }
+        if (PRECACHE.some(p => url.startsWith(p.split('?')[0]))) {
+          e.respondWith(caches.match(e.request).then(c => c || fetch(e.request)));
+          return;
+        }
+      });
+    `;
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+      const swBlob = new Blob([swCode], { type: 'application/javascript' });
+      navigator.serviceWorker.register(URL.createObjectURL(swBlob)).catch(() => {});
+    }
+  }
+
+  /* ----- localStorage: group reports ----- */
+  function loadReports() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_REPORTS) || '{}'); }
+    catch { return {}; }
+  }
+  function saveReport(parkId, patch) {
+    reports[parkId] = {
+      ...(reports[parkId] || {}),
+      ...patch,
+      updatedAt: new Date().toISOString()
+    };
+    localStorage.setItem(STORAGE_REPORTS, JSON.stringify(reports));
+    render();
+    if (selectedId === parkId) openDetail(parkId);
+  }
+
+  function loadVacancyCache() {
+    try {
+      const c = JSON.parse(localStorage.getItem(STORAGE_CACHE) || 'null');
+      if (c && Date.now() - c.ts < 30 * 60_000) return c.data;
+    } catch {}
+    return null;
+  }
+  function saveVacancyCache(data) {
+    localStorage.setItem(STORAGE_CACHE, JSON.stringify({ ts: Date.now(), data }));
+  }
+
+  function hkExtentStr() {
+    return [HK_BOUNDS.west, HK_BOUNDS.south, HK_BOUNDS.east, HK_BOUNDS.north].join(',');
+  }
+
+  function loadCarParkCache() {
+    try {
+      const c = JSON.parse(localStorage.getItem(STORAGE_CARPARKS) || 'null');
+      if (c && Date.now() - c.ts < 24 * 60 * 60_000) return c.data;
+    } catch {}
+    return null;
+  }
+
+  function saveCarParkCache(data) {
+    localStorage.setItem(STORAGE_CARPARKS, JSON.stringify({ ts: Date.now(), data }));
+  }
+
+  function enrichSeedPark(p) {
+    const o = CURATED_OVERRIDES[p.govId] || {};
+    return {
+      ...p,
+      name: o.name || p.name,
+      nameEn: o.nameEn || null,
+      note: o.note || p.note || (p.evSpaces ? `政府數據：${p.evSpaces} 個 EV 位` : null),
+      hasEV: o.hasEV !== undefined ? o.hasEV : p.hasEV,
+      subDistrict: p.subDistrict || ''
+    };
+  }
+
+  function buildSeedCarParks() {
+    const byId = new Map();
+    for (const p of SEED_EV_PARKS) byId.set(p.id, enrichSeedPark(p));
+    for (const extra of CURATED_EXTRAS) byId.set(extra.id, { ...extra });
+    return [...byId.values()];
+  }
+
+  function seedGovIds() {
+    return [...new Set(buildSeedCarParks().map(c => c.govId).filter(Boolean))];
+  }
+
+  function restoreLastPosition() {
+    try {
+      const raw = sessionStorage.getItem(STORAGE_LAST_POS);
+      if (!raw) return false;
+      const pos = JSON.parse(raw);
+      if (pos?.lat && pos?.lng) {
+        userPos = pos;
+        showUserLocation(pos.lat, pos.lng);
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  function saveLastPosition() {
+    if (userPos) sessionStorage.setItem(STORAGE_LAST_POS, JSON.stringify(userPos));
+  }
+
+  function sortByDistance(list, anchor) {
+    return [...list].sort((a, b) =>
+      haversineKm(anchor.lat, anchor.lng, a.lat, a.lng) -
+      haversineKm(anchor.lat, anchor.lng, b.lat, b.lng)
+    );
+  }
+
+  function getPositionAnchor() {
+    return userPos || { lat: MAP_CENTER[0], lng: MAP_CENTER[1] };
+  }
+
+  function buildCarParkFromGov(r) {
+    const govId = r.park_Id;
+    const o = CURATED_OVERRIDES[govId] || {};
+    const fac = r.facilities || [];
+    const pc = r.privateCar || {};
+    const hasEV = o.hasEV !== undefined ? o.hasEV : fac.includes('evCharger');
+    const evSpaces = pc.spaceEV > 0 ? pc.spaceEV : (o.evSpaces ?? null);
+    return {
+      id: String(govId),
+      govId,
+      name: o.name || r.name,
+      nameEn: o.nameEn || null,
+      address: o.address || r.displayAddress || '',
+      lat: r.latitude,
+      lng: r.longitude,
+      hasEV,
+      evSpaces,
+      note: o.note || (hasEV && evSpaces ? `政府數據：${evSpaces} 個 EV 位` : null),
+      district: r.district || r.address?.dcDistrict || '',
+      subDistrict: r.address?.subDistrict || ''
+    };
+  }
+
+  async function fetchCarParkInfo(force = false) {
+    if (!force) {
+      const cached = loadCarParkCache();
+      if (cached?.length) {
+        CARPARKS = cached;
+        return true;
+      }
+    }
+    setStatus('正在載入全港停車場…');
+    try {
+      const res = await fetch(
+        `${API_BASE}?data=info&vehicleTypes=privateCar&extent=${hkExtentStr()}&lang=zh_TW`
+      );
+      if (!res.ok) throw new Error('API ' + res.status);
+      const json = await res.json();
+      const byId = new Map();
+      for (const r of json.results || []) byId.set(String(r.park_Id), buildCarParkFromGov(r));
+      for (const extra of CURATED_EXTRAS) byId.set(extra.id, { ...extra });
+      CARPARKS = [...byId.values()];
+      saveCarParkCache(CARPARKS);
+      return true;
+    } catch (err) {
+      console.warn('Car park info fetch failed:', err);
+      const cached = loadCarParkCache();
+      if (cached?.length) {
+        CARPARKS = cached;
+        setStatus('使用快取嘅停車場資料');
+        return false;
+      }
+      CARPARKS = [...CURATED_EXTRAS];
+      setStatus('停車場資料載入失敗');
+      return false;
+    }
+  }
+
+  function mergeVacancyResults(results) {
+    for (const r of results || []) {
+      const pc = r.privateCar?.[0];
+      if (pc) vacancyMap[r.park_Id] = pc;
+    }
+  }
+
+  /* ----- API ----- */
+  async function fetchVacancyForIds(govIds, quiet = false) {
+    if (!govIds.length) return false;
+    if (!quiet) setStatus('正在攞附近空位…');
+    try {
+      const res = await fetch(
+        `${API_BASE}?data=vacancy&vehicleTypes=privateCar&carparkIds=${govIds.join(',')}&lang=zh_TW`
+      );
+      if (!res.ok) throw new Error('API ' + res.status);
+      mergeVacancyResults((await res.json()).results);
+      lastFetchTime = new Date();
+      document.getElementById('offline-banner').classList.add('hidden');
+      return true;
+    } catch (err) {
+      console.warn('Quick vacancy fetch failed:', err);
+      return false;
+    }
+  }
+
+  async function fetchVacancy() {
+    const url = `${API_BASE}?data=vacancy&vehicleTypes=privateCar&extent=${hkExtentStr()}&lang=zh_TW`;
+
+    if (!bootstrapActive) setStatus('正在攞即時空位…');
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('API ' + res.status);
+      const json = await res.json();
+      const map = {};
+      for (const r of json.results || []) {
+        const pc = r.privateCar?.[0];
+        if (pc) map[r.park_Id] = pc;
+      }
+      vacancyMap = map;
+      lastFetchTime = new Date();
+      saveVacancyCache(map);
+      document.getElementById('offline-banner').classList.add('hidden');
+      setStatus(`已更新 ${formatTime(lastFetchTime)} · 全港 ${Object.keys(map).length} 個空位數據`);
+      return true;
+    } catch (err) {
+      console.warn('Vacancy fetch failed:', err);
+      const cached = loadVacancyCache();
+      if (cached) {
+        vacancyMap = cached;
+        document.getElementById('offline-banner').classList.remove('hidden');
+        setStatus('使用快取嘅空位資料');
+        return false;
+      }
+      setStatus('空位資料唔可用 — 只顯示靜態資料');
+      return false;
+    }
+  }
+
+  async function loadFullDataInBackground() {
+    setStatus('附近 EV 已顯示 · 背景載入全港資料…');
+    await fetchCarParkInfo();
+    await fetchVacancy();
+    fullDataReady = true;
+    bootstrapActive = false;
+    render();
+  }
+
+  /* ----- Helpers ----- */
+  function haversineKm(lat1, lng1, lat2, lng2) {
+    const R = 6371, toRad = d => d * Math.PI / 180;
+    const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
+    const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLng/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+
+  function formatTime(d) {
+    if (!d) return '—';
+    return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+
+  function formatAgo(iso) {
+    if (!iso) return '';
+    const mins = Math.round((Date.now() - new Date(iso)) / 60000);
+    if (mins < 1) return '啱啱';
+    if (mins < 60) return `${mins} 分鐘前`;
+    return `${Math.round(mins/60)} 小時前`;
+  }
+
+  const CHARGER_LABELS = { working: '正常', broken: '壞咗' };
+
+  function getVacancy(cp) {
+    if (!cp.govId || !vacancyMap[cp.govId]) return null;
+    return vacancyMap[cp.govId];
+  }
+
+  function vacancyLabel(v) {
+    if (!v) return { text: '冇即時數據', color: 'text-slate-400', available: null };
+    const type = v.vacancy_type;
+    const spaces = v.vacancy;
+    const evSpaces = v.vacancyEV;
+    if (type === 'C') return { text: '停車場已關閉／已滿', color: 'text-red-400', available: false };
+    if (spaces === 0) return { text: '0 個位', color: 'text-red-400', available: false };
+    let text = `仲有 ${spaces} 個位`;
+    if (evSpaces !== undefined && evSpaces !== null) text += ` · ${evSpaces} 個 EV 空置`;
+    return { text, color: spaces > 5 ? 'text-emerald-400' : 'text-amber-400', available: spaces > 0 };
+  }
+
+  function markerColor(cp) {
+    const report = reports[cp.id];
+    if (report?.parkingFull) return '#ef4444';
+    const v = getVacancy(cp);
+    const vl = vacancyLabel(v);
+    if (vl.available === false) return '#ef4444';
+    if (vl.available === true) return vl.text.includes('0') ? '#f59e0b' : '#10b981';
+    if (report?.chargerStatus === 'broken') return '#f59e0b';
+    return '#3b82f6'; // unknown / no data
+  }
+
+  function getSearchQuery() {
+    return (document.getElementById('search-input')?.value || '').trim();
+  }
+
+  function detectArea(q) {
+    const raw = (q || '').trim().toLowerCase().replace(/\s+/g, '');
+    if (raw.length < 2) return null;
+    let best = null, bestScore = 0;
+    for (const area of AREA_INDEX) {
+      for (const name of area.names) {
+        const nn = name.toLowerCase().replace(/\s+/g, '');
+        let score = 0;
+        if (raw === nn) score = 100 + nn.length;
+        else if (nn.startsWith(raw) || raw.startsWith(nn)) score = 60 + Math.min(raw.length, nn.length);
+        else if (nn.includes(raw) || raw.includes(nn)) score = 30 + Math.min(raw.length, nn.length);
+        if (score > bestScore) { bestScore = score; best = area; }
+      }
+    }
+    return bestScore >= 30 ? best : null;
+  }
+
+  function inAreaBounds(cp, bounds) {
+    return cp.lat >= bounds.south && cp.lat <= bounds.north
+      && cp.lng >= bounds.west && cp.lng <= bounds.east;
+  }
+
+  function areaNameInText(cp, area) {
+    const hay = [cp.name, cp.nameEn, cp.address, cp.district, cp.subDistrict]
+      .filter(Boolean).join(' ').toLowerCase();
+    return area.names.some(n => hay.includes(n.toLowerCase()));
+  }
+
+  function matchesSearch(cp, q) {
+    if (!q) return true;
+    const area = detectArea(q);
+    if (area) return inAreaBounds(cp, area.bounds) || areaNameInText(cp, area);
+    const ql = q.toLowerCase();
+    const haystack = [cp.name, cp.nameEn, cp.address, cp.note, cp.district, cp.subDistrict, cp.id]
+      .filter(Boolean).join(' ').toLowerCase();
+    return ql.split(/\s+/).every(term => haystack.includes(term));
+  }
+
+  function applySpacesFilter(list) {
+    if (!document.getElementById('filter-spaces').checked) return list;
+    return list.filter(cp => {
+      const v = getVacancy(cp);
+      if (v) return v.vacancy_type !== 'C' && v.vacancy > 0;
+      return !reports[cp.id]?.parkingFull;
+    });
+  }
+
+  function getFiltered() {
+    const evOnly = document.getElementById('filter-ev').checked;
+    const nearOnly = document.getElementById('filter-near').checked;
+    const spacesOnly = document.getElementById('filter-spaces').checked;
+    const query = getSearchQuery();
+
+    // 快速啟動：未載入全港資料時，預設顯示附近 10 個 EV 站
+    if (bootstrapActive && !fullDataReady && !query && !nearOnly) {
+      let list = CARPARKS.filter(cp => cp.hasEV);
+      if (spacesOnly) list = applySpacesFilter(list);
+      return sortByDistance(list, getPositionAnchor()).slice(0, NEARBY_BOOTSTRAP_COUNT);
+    }
+
+    let list = CARPARKS.filter(cp => !evOnly || cp.hasEV);
+    if (query) list = list.filter(cp => matchesSearch(cp, query));
+
+    if (nearOnly && userPos) {
+      list = list.filter(cp => haversineKm(userPos.lat, userPos.lng, cp.lat, cp.lng) <= NEAR_RADIUS_KM);
+    }
+
+    if (spacesOnly) list = applySpacesFilter(list);
+
+    if (userPos && !query) list = sortByDistance(list, userPos);
+    return list;
+  }
+
+  function isBootstrapView() {
+    return bootstrapActive && !fullDataReady && !getSearchQuery()
+      && !document.getElementById('filter-near').checked;
+  }
+
+  function fitMapToList(list) {
+    if (!list.length) return;
+    if (list.length === 1) {
+      map.setView([list[0].lat, list[0].lng], Math.max(map.getZoom(), 16));
+      return;
+    }
+    const bounds = L.latLngBounds(list.map(cp => [cp.lat, cp.lng]));
+    map.fitBounds(bounds.pad(0.15), { maxZoom: 16 });
+  }
+
+  function fitMapToArea(area) {
+    const b = area.bounds;
+    map.fitBounds([[b.south, b.west], [b.north, b.east]], { maxZoom: 15, padding: [40, 40] });
+  }
+
+  function showAreaHighlight(area) {
+    if (areaLayer) { map.removeLayer(areaLayer); areaLayer = null; }
+    if (!area) return;
+    const b = area.bounds;
+    areaLayer = L.rectangle([[b.south, b.west], [b.north, b.east]], {
+      color: '#10b981', weight: 2, fillColor: '#10b981', fillOpacity: 0.08, dashArray: '6 4'
+    }).addTo(map);
+  }
+
+  function setStatus(msg) {
+    document.getElementById('status-bar').textContent = msg;
+  }
+
+  /* ----- Map ----- */
+  function initMap() {
+    map = L.map('map', { zoomControl: false, attributionControl: true })
+      .setView(MAP_CENTER, MAP_ZOOM);
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OSM &copy; CARTO',
+      maxZoom: 19
+    }).addTo(map);
+    markersLayer = L.layerGroup().addTo(map);
+  }
+
+  function makeIcon(color, isEV = true) {
+    const sym = isEV ? '⚡' : 'P';
+    return L.divIcon({
+      className: '',
+      html: `<div class="marker-pin" style="background:${color}">
+               <div class="marker-inner">${sym}</div>
+             </div>`,
+      iconSize: [28, 28], iconAnchor: [14, 28], popupAnchor: [0, -28]
+    });
+  }
+
+  function renderMarkers(list) {
+    markersLayer.clearLayers();
+    const onMap = list.length > MAP_MARKER_LIMIT ? list.slice(0, MAP_MARKER_LIMIT) : list;
+    onMap.forEach(cp => {
+      const m = L.marker([cp.lat, cp.lng], { icon: makeIcon(markerColor(cp), cp.hasEV) });
+      m.on('click', () => openDetail(cp.id));
+      m.bindTooltip(cp.name, { direction: 'top', offset: [0, -30] });
+      markersLayer.addLayer(m);
+    });
+  }
+
+  function showUserLocation(lat, lng) {
+    if (userMarker) map.removeLayer(userMarker);
+    userMarker = L.circleMarker([lat, lng], {
+      radius: 8, color: '#60a5fa', fillColor: '#3b82f6', fillOpacity: 0.9, weight: 3
+    }).addTo(map);
+    if (document.getElementById('filter-near').checked) {
+      map.setView([lat, lng], 15);
+    }
+  }
+
+  /* ----- List & detail UI ----- */
+  function renderList(list) {
+    const el = document.getElementById('list-scroll');
+    const q = getSearchQuery();
+    const area = detectArea(q);
+    const mapNote = list.length > MAP_MARKER_LIMIT ? `（地圖顯示 ${MAP_MARKER_LIMIT} 個）` : '';
+    const areaNote = area ? `${area.label} · ` : '';
+    const bootNote = isBootstrapView() ? '附近 · ' : '';
+    document.getElementById('list-summary').textContent =
+      `${bootNote}${areaNote}${list.length} 個停車場${mapNote}`;
+
+    if (!list.length) {
+      const msg = area
+        ? `「${esc(area.label)}」暫時冇符合條件嘅停車場 — 試下關掉「淨係 EV」或其他篩選。`
+        : q
+          ? `搵唔到「${esc(q)}」— 試下其他地區或關鍵字。`
+          : '冇相符結果 — 試下關掉篩選條件。';
+      el.innerHTML = `<p class="text-slate-400 text-sm text-center py-4">${msg}</p>`;
+      return;
+    }
+
+    el.innerHTML = list.map(cp => {
+      const v = getVacancy(cp);
+      const vl = vacancyLabel(v);
+      const dist = userPos
+        ? `<span class="text-slate-500">${haversineKm(userPos.lat, userPos.lng, cp.lat, cp.lng).toFixed(1)} km</span>`
+        : '';
+      const report = reports[cp.id];
+      const badge = report?.parkingFull
+        ? '<span class="text-red-400 text-xs">已滿（有人報告）</span>'
+        : report?.chargerStatus === 'broken'
+          ? '<span class="text-amber-400 text-xs">充電器有問題</span>'
+          : '';
+      return `
+        <button type="button" data-id="${cp.id}"
+          class="w-full text-left p-3 rounded-xl bg-slate-800 active:bg-slate-700 border border-slate-700/50">
+          <div class="flex justify-between items-start gap-2">
+            <div class="min-w-0">
+              <p class="font-semibold truncate">${esc(cp.name)}</p>
+              <p class="text-xs text-slate-400 truncate">${esc(cp.address)}</p>
+            </div>
+            ${dist}
+          </div>
+          <div class="flex flex-wrap gap-2 mt-1.5 text-xs items-center">
+            ${cp.hasEV
+              ? '<span class="text-emerald-400">⚡ 有 EV</span>'
+              : '<span class="text-slate-500">泊車場</span>'}
+            <span class="${vl.color}">${esc(vl.text)}</span>
+            ${badge}
+          </div>
+        </button>`;
+    }).join('');
+
+    el.querySelectorAll('button[data-id]').forEach(btn => {
+      btn.addEventListener('click', () => openDetail(btn.dataset.id));
+    });
+  }
+
+  function openDetail(id) {
+    selectedId = id;
+    const cp = CARPARKS.find(c => c.id === id);
+    if (!cp) return;
+
+    const v = getVacancy(cp);
+    const vl = vacancyLabel(v);
+    const report = reports[cp.id] || {};
+    const lastApi = v?.lastupdate ? new Date(v.lastupdate.replace(' ', 'T') + '+08:00') : null;
+    const gmaps = `https://www.google.com/maps/dir/?api=1&destination=${cp.lat},${cp.lng}&travelmode=driving`;
+
+    document.getElementById('detail-content').innerHTML = `
+      <div class="flex justify-between items-start">
+        <div>
+          <h2 class="text-xl font-bold">${esc(cp.name)}</h2>
+          ${cp.nameEn ? `<p class="text-sm text-slate-400">${esc(cp.nameEn)}</p>` : ''}
+        </div>
+        <button id="detail-close" type="button" class="w-10 h-10 rounded-full bg-slate-800 text-xl leading-none" aria-label="關閉">×</button>
+      </div>
+      <p class="text-slate-300">${esc(cp.address)}</p>
+      ${cp.note ? `<p class="text-xs text-slate-500 bg-slate-800/50 rounded-lg p-2">${esc(cp.note)}</p>` : ''}
+
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-slate-800 rounded-xl p-3">
+          <p class="text-xs text-slate-400">EV 充電</p>
+          <p class="text-lg font-bold text-emerald-400">${cp.hasEV ? '✓ 有' : '✗ 冇'}</p>
+          ${cp.evSpaces ? `<p class="text-xs text-slate-500">${cp.evSpaces} 個車位（政府數據）</p>` : ''}
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3">
+          <p class="text-xs text-slate-400">泊車空位</p>
+          <p class="text-lg font-bold ${vl.color}">${esc(vl.text)}</p>
+          ${lastApi ? `<p class="text-xs text-slate-500">政府數據：${formatTime(lastApi)}</p>` : '<p class="text-xs text-slate-500">冇政府即時數據</p>'}
+        </div>
+      </div>
+
+      <a href="${gmaps}" target="_blank" rel="noopener"
+        class="tap-target block w-full text-center py-4 rounded-2xl bg-emerald-600 active:bg-emerald-500
+               text-lg font-bold shadow-lg shadow-emerald-900/40">
+        🧭 用 Google Maps 導航
+      </a>
+
+      <div class="flex items-center gap-1.5 flex-wrap pt-2 border-t border-slate-800">
+        <span class="text-xs text-slate-500 shrink-0">報告</span>
+        ${report.chargerStatus || report.parkingFull
+          ? `<span class="text-xs text-amber-400/80">${formatAgo(report.updatedAt)}</span>` : ''}
+        <button type="button" data-report="charger-working"
+          class="px-2 py-1 rounded-md bg-slate-800 text-xs text-slate-400 active:bg-emerald-900/50 active:text-emerald-300">
+          ✓ 正常
+        </button>
+        <button type="button" data-report="charger-broken"
+          class="px-2 py-1 rounded-md bg-slate-800 text-xs text-slate-400 active:bg-amber-900/50 active:text-amber-300">
+          ✗ 壞
+        </button>
+        <button type="button" data-report="parking-full"
+          class="px-2 py-1 rounded-md bg-slate-800 text-xs text-slate-400 active:bg-red-900/50 active:text-red-300">
+          滿
+        </button>
+        ${report.chargerStatus || report.parkingFull ? `
+        <button type="button" data-report="clear"
+          class="px-2 py-1 text-xs text-slate-600 active:text-slate-400">
+          清除
+        </button>` : ''}
+      </div>
+    `;
+
+    document.getElementById('detail-overlay').classList.remove('hidden');
+    document.getElementById('detail-sheet').classList.remove('hidden');
+
+    document.getElementById('detail-close').onclick = closeDetail;
+    document.getElementById('detail-overlay').onclick = closeDetail;
+
+    document.querySelectorAll('[data-report]').forEach(btn => {
+      btn.onclick = () => {
+        const action = btn.dataset.report;
+        if (action === 'charger-working') saveReport(id, { chargerStatus: 'working', parkingFull: false });
+        else if (action === 'charger-broken') saveReport(id, { chargerStatus: 'broken' });
+        else if (action === 'parking-full') saveReport(id, { parkingFull: true });
+        else if (action === 'clear') { delete reports[id]; localStorage.setItem(STORAGE_REPORTS, JSON.stringify(reports)); render(); openDetail(id); }
+      };
+    });
+
+    map.setView([cp.lat, cp.lng], Math.max(map.getZoom(), 16));
+  }
+
+  function closeDetail() {
+    selectedId = null;
+    document.getElementById('detail-overlay').classList.add('hidden');
+    document.getElementById('detail-sheet').classList.add('hidden');
+  }
+
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s || '';
+    return d.innerHTML;
+  }
+
+  function render() {
+    const list = getFiltered();
+    const q = getSearchQuery();
+    const area = detectArea(q);
+    renderMarkers(list);
+    renderList(list);
+    if (area) {
+      showAreaHighlight(area);
+      fitMapToArea(area);
+    } else {
+      showAreaHighlight(null);
+      if ((q || isBootstrapView()) && list.length) fitMapToList(list);
+    }
+  }
+
+  function onSearchInput() {
+    const input = document.getElementById('search-input');
+    const clearBtn = document.getElementById('search-clear');
+    clearBtn.hidden = !input.value;
+    if (input.value.trim()) bootstrapActive = false;
+    render();
+    if (input.value.trim()) {
+      const panel = document.getElementById('list-panel');
+      panel.style.maxHeight = '55vh';
+      listExpanded = true;
+    }
+  }
+
+  function clearSearch() {
+    const input = document.getElementById('search-input');
+    input.value = '';
+    document.getElementById('search-clear').hidden = true;
+    showAreaHighlight(null);
+    map.setView(MAP_CENTER, MAP_ZOOM);
+    input.focus();
+    render();
+  }
+
+  /* ----- Geolocation ----- */
+  function onLocationFound(pos, accuracy) {
+    userPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    saveLastPosition();
+    showUserLocation(userPos.lat, userPos.lng);
+    if (bootstrapActive && !fullDataReady) {
+      setStatus(`附近 ${NEARBY_BOOTSTRAP_COUNT} 個 EV 站 · 誤差約 ±${Math.round(accuracy)} 米`);
+    } else {
+      setStatus(`已找到位置 · 誤差約 ±${Math.round(accuracy)} 米`);
+    }
+    render();
+  }
+
+  function requestLocationAsync() {
+    return new Promise(resolve => {
+      if (!navigator.geolocation) { resolve(false); return; }
+      navigator.geolocation.getCurrentPosition(
+        pos => { onLocationFound(pos, pos.coords.accuracy); resolve(true); },
+        () => {
+          if (!userPos) setStatus('定位被拒絕 — 顯示預設附近 EV 站');
+          resolve(false);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 120000 }
+      );
+    });
+  }
+
+  function requestLocation() {
+    if (!navigator.geolocation) { setStatus('呢部機唔支援定位'); return; }
+    setStatus('正在定位…');
+    requestLocationAsync();
+  }
+
+  /* ----- Events ----- */
+  function bindEvents() {
+    ['filter-ev', 'filter-near', 'filter-spaces'].forEach(id => {
+      document.getElementById(id).addEventListener('change', () => {
+        if (id === 'filter-near' || id === 'filter-ev') bootstrapActive = false;
+        render();
+      });
+    });
+    const searchInput = document.getElementById('search-input');
+    let searchTimer;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(onSearchInput, 120);
+    });
+    searchInput.addEventListener('search', onSearchInput);
+    document.getElementById('search-clear').addEventListener('click', clearSearch);
+
+    document.getElementById('btn-locate').addEventListener('click', requestLocation);
+    document.getElementById('btn-refresh').addEventListener('click', async () => {
+      document.getElementById('btn-refresh').classList.add('animate-spin');
+      await Promise.all([fetchCarParkInfo(true), fetchVacancy()]);
+      render();
+      document.getElementById('btn-refresh').classList.remove('animate-spin');
+    });
+
+    const panel = document.getElementById('list-panel');
+    document.getElementById('list-handle').addEventListener('click', () => {
+      listExpanded = !listExpanded;
+      panel.style.maxHeight = listExpanded ? '70vh' : '42vh';
+    });
+
+    window.addEventListener('online', () => fetchVacancy().then(render));
+    window.addEventListener('offline', () => document.getElementById('offline-banner').classList.remove('hidden'));
+  }
+
+  /* ----- Boot ----- */
+  async function init() {
+    setupPWA();
+    initMap();
+    bindEvents();
+
+    const cachedParks = loadCarParkCache();
+    const cachedVacancy = loadVacancyCache();
+    if (cachedVacancy) vacancyMap = cachedVacancy;
+
+    if (cachedParks?.length) {
+      // 有快取：直接全港模式，幾乎即時
+      CARPARKS = cachedParks;
+      fullDataReady = true;
+      bootstrapActive = false;
+      restoreLastPosition();
+      setStatus(cachedVacancy ? '已載入快取資料' : '正在攞即時空位…');
+      render();
+      requestLocationAsync();
+      if (!cachedVacancy) await fetchVacancy();
+      else setStatus(`已更新快取 · 全港 ${CARPARKS.length} 個停車場`);
+      render();
+    } else {
+      // 首次載入：種子資料即時顯示附近 10 個 EV 站
+      CARPARKS = buildSeedCarParks();
+      bootstrapActive = true;
+      fullDataReady = false;
+      restoreLastPosition();
+      setStatus(`顯示附近 ${NEARBY_BOOTSTRAP_COUNT} 個 EV 站…`);
+      render();
+
+      const geoPromise = requestLocationAsync();
+      const vacancyPromise = cachedVacancy
+        ? Promise.resolve(true)
+        : fetchVacancyForIds(seedGovIds(), true);
+      await Promise.all([geoPromise, vacancyPromise]);
+      render();
+
+      loadFullDataInBackground();
+    }
+
+    refreshTimer = setInterval(async () => {
+      if (document.hidden) return;
+      await fetchVacancy();
+      render();
+    }, REFRESH_MS);
+  }
+
+  document.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>
