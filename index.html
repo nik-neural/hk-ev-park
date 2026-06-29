@@ -443,15 +443,56 @@
     };
   }
 
-  function priceSummary(cp) {
-    const parts = [];
-    if (cp.parkHourly != null) parts.push(`泊車 $${cp.parkHourly}/hr`);
-    if (cp.evChargeMin != null) parts.push(`充電 ~$${cp.evChargeMin}/kWh`);
-    else if (cp.evChargeDetail) {
-      const s = cp.evChargeDetail.length > 22 ? cp.evChargeDetail.slice(0, 22) + '…' : cp.evChargeDetail;
-      parts.push(s);
+  function parkPriceLabel(cp) {
+    if (cp.parkHourly == null) return null;
+    return `$${cp.parkHourly}/小時`;
+  }
+
+  function evPriceLabel(cp, short = false) {
+    if (cp.evChargeMin != null && cp.evChargeDetail) {
+      return short ? `~$${cp.evChargeMin}/kWh 起` : cp.evChargeDetail;
     }
-    return parts.length ? parts.join(' · ') : null;
+    if (cp.evChargeMin != null) return `~$${cp.evChargeMin}/kWh`;
+    if (cp.evChargeDetail) {
+      const s = cp.evChargeDetail;
+      return short && s.length > 24 ? s.slice(0, 24) + '…' : s;
+    }
+    return null;
+  }
+
+  function renderListPrices(cp) {
+    const park = parkPriceLabel(cp);
+    const ev = cp.hasEV ? evPriceLabel(cp, true) : null;
+    if (!park && !ev) return '';
+    const parkHtml = park
+      ? `<span class="text-slate-500">🅿️ <span class="text-slate-300">${esc(park)}</span></span>`
+      : '';
+    const evHtml = ev
+      ? `<span class="text-slate-500">⚡ <span class="text-emerald-400/90">${esc(ev)}</span></span>`
+      : (cp.hasEV ? '<span class="text-slate-600">⚡ 充電價錢未知</span>' : '');
+    return `<div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-xs">${parkHtml}${evHtml}</div>`;
+  }
+
+  function renderDetailPrices(cp) {
+    const park = parkPriceLabel(cp);
+    const ev = cp.hasEV ? evPriceLabel(cp, false) : null;
+    if (!park && !ev && !cp.hasEV) return '';
+    return `
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-slate-800 rounded-xl p-3 min-h-[5.5rem]">
+          <p class="text-xs text-slate-400">🅿️ 泊車收費</p>
+          <p class="text-lg font-bold text-slate-200 mt-0.5">${park ? esc(park) : '—'}</p>
+          <p class="text-xs text-slate-500 mt-1">${park ? '政府數據' : '未有公開數據'}</p>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 min-h-[5.5rem]">
+          <p class="text-xs text-slate-400">⚡ 充電收費</p>
+          ${ev
+            ? `<p class="text-sm font-semibold text-emerald-300/90 mt-0.5 leading-snug">${esc(ev)}</p>`
+            : `<p class="text-lg font-bold text-slate-500 mt-0.5">—</p>`}
+          <p class="text-xs text-slate-500 mt-1">${ev ? '以現場／App 為準' : (cp.hasEV ? '未有公開數據' : '唔適用')}</p>
+        </div>
+      </div>
+      <p class="text-xs text-slate-600 text-center">價錢可能有變，以現場／充電 App 為準</p>`;
   }
 
   function enrichSeedPark(p) {
@@ -883,7 +924,6 @@
         : report?.chargerStatus === 'broken'
           ? '<span class="text-amber-400 text-xs">充電器有問題</span>'
           : '';
-      const price = priceSummary(cp);
       return `
         <button type="button" data-id="${cp.id}"
           class="w-full text-left p-3 rounded-xl bg-slate-800 active:bg-slate-700 border border-slate-700/50">
@@ -901,7 +941,7 @@
             <span class="${vl.color}">${esc(vl.text)}</span>
             ${badge}
           </div>
-          ${price ? `<p class="text-xs text-slate-500 mt-1 truncate">💰 ${esc(price)}</p>` : ''}
+          ${renderListPrices(cp)}
         </button>`;
     }).join('');
 
@@ -946,14 +986,7 @@
         </div>
       </div>
 
-      ${(cp.parkHourly != null || cp.evChargeDetail) ? `
-      <div class="bg-slate-800/80 rounded-xl p-3 space-y-2">
-        <p class="text-xs font-medium text-slate-300">💰 收費參考</p>
-        ${cp.parkHourly != null ? `<p class="text-sm"><span class="text-slate-400">泊車</span> <span class="text-slate-200">$${cp.parkHourly}/小時</span> <span class="text-xs text-slate-500">（政府數據）</span></p>` : ''}
-        ${cp.evChargeDetail ? `<p class="text-sm"><span class="text-slate-400">充電</span> <span class="text-emerald-300/90">${esc(cp.evChargeDetail)}</span></p>` : (cp.hasEV ? '<p class="text-sm text-slate-500">充電價錢未有公開數據 — 到場或查商場 App</p>' : '')}
-        <p class="text-xs text-slate-600">價錢可能有變，以現場／充電 App 為準</p>
-      </div>` : (cp.hasEV ? `
-      <p class="text-xs text-slate-500 bg-slate-800/50 rounded-lg p-2">充電同泊車價錢未有公開數據 — 建議到場或查商場 App 確認</p>` : '')}
+      ${renderDetailPrices(cp)}
 
       <a href="${gmaps}" target="_blank" rel="noopener"
         class="tap-target block w-full text-center py-4 rounded-2xl bg-emerald-600 active:bg-emerald-500
