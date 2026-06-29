@@ -661,15 +661,25 @@
   }
 
   function vacancyLabel(v) {
-    if (!v) return { text: '冇即時數據', color: 'text-slate-400', available: null };
+    if (!v) return { text: '冇即時數據', color: 'text-slate-400', available: null, evVacancy: null };
     const type = v.vacancy_type;
     const spaces = v.vacancy;
-    const evSpaces = v.vacancyEV;
-    if (type === 'C') return { text: '停車場已關閉／已滿', color: 'text-red-400', available: false };
-    if (spaces === 0) return { text: '0 個位', color: 'text-red-400', available: false };
+    const evVacancy = v.vacancyEV;
+    if (type === 'C') return { text: '停車場已關閉／已滿', color: 'text-red-400', available: false, evVacancy };
+    if (spaces === 0) return { text: '0 個位', color: 'text-red-400', available: false, evVacancy };
     let text = `仲有 ${spaces} 個位`;
-    if (evSpaces !== undefined && evSpaces !== null) text += ` · ${evSpaces} 個 EV 空置`;
-    return { text, color: spaces > 5 ? 'text-emerald-400' : 'text-amber-400', available: spaces > 0 };
+    // 政府 API 多數長期報 vacancyEV: 0，唔代表真係冇 EV 位 — 只有 >0 先顯示
+    if (evVacancy > 0) text += ` · ${evVacancy} 個 EV 空置`;
+    return { text, color: spaces > 5 ? 'text-emerald-400' : 'text-amber-400', available: spaces > 0, evVacancy };
+  }
+
+  function evVacancyNote(cp, v) {
+    if (!cp.hasEV || !v) return '';
+    if (v.vacancyEV > 0) return `<p class="text-xs text-emerald-400/80">EV 空置：${v.vacancyEV} 個（政府數據）</p>`;
+    if (v.vacancyEV === 0) {
+      return `<p class="text-xs text-slate-500">政府 EV 空置數長期顯示 0，多數係數據冇更新，唔代表一定冇 EV 位 — 請到場確認</p>`;
+    }
+    return `<p class="text-xs text-slate-500">政府冇提供 EV 空置數 — 請到場確認</p>`;
   }
 
   function markerColor(cp) {
@@ -678,7 +688,10 @@
     const v = getVacancy(cp);
     const vl = vacancyLabel(v);
     if (vl.available === false) return '#ef4444';
-    if (vl.available === true) return vl.text.includes('0') ? '#f59e0b' : '#10b981';
+    if (vl.available === true) {
+      const spaces = getVacancy(cp)?.vacancy ?? 0;
+      return spaces > 5 ? '#10b981' : '#f59e0b';
+    }
     if (report?.chargerStatus === 'broken') return '#f59e0b';
     return '#3b82f6'; // unknown / no data
   }
@@ -929,6 +942,7 @@
           <p class="text-xs text-slate-400">泊車空位</p>
           <p class="text-lg font-bold ${vl.color}">${esc(vl.text)}</p>
           ${lastApi ? `<p class="text-xs text-slate-500">政府數據：${formatTime(lastApi)}</p>` : '<p class="text-xs text-slate-500">冇政府即時數據</p>'}
+          ${cp.hasEV ? evVacancyNote(cp, v) : ''}
         </div>
       </div>
 
