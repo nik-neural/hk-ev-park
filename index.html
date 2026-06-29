@@ -164,7 +164,7 @@
   const APP_VERSION = '1.0.0';
   const STORAGE_REPORTS = 'hkev_reports_v1';
   const STORAGE_CACHE = 'hkev_vacancy_cache_v1';
-  const STORAGE_CARPARKS = 'hkev_carparks_cache_v2';
+  const STORAGE_CARPARKS = 'hkev_carparks_cache_v3';
   const MAP_MARKER_LIMIT = 80;
   const NEAR_RADIUS_KM = 3;
   const NEARBY_BOOTSTRAP_COUNT = 10;
@@ -183,10 +183,10 @@
 
   // 已知地點備註／覆寫（govId → 覆寫欄位）
   const CURATED_OVERRIDES = {
-    '123': { name: '觀塘道350號停車場', nameEn: 'KTR350', note: '大型公共 EV 充電站 — 到場再確認邊個充電位可用。' },
+    '123': { name: '觀塘道350號停車場', nameEn: 'KTR350', note: '大型公共 EV 充電站 — 到場再確認邊個充電位可用。', evChargeDetail: '多個充電商，價錢不一 — 建議用充電 App 確認' },
     '81': { nameEn: 'Manulife Place', note: '寫字樓停車場，有專用 EV 車位。' },
     '12': { nameEn: 'Amoy Plaza', note: '商場停車場，5 個 EV 位。消費可享免費泊車。' },
-    'tdc332p1': { hasEV: true, nameEn: 'apm Car Park', note: '大型商場，現場有 EV 充電（政府 API 未標示）。到場再確認。' },
+    'tdc332p1': { hasEV: true, nameEn: 'apm Car Park', note: '大型商場，現場有 EV 充電（政府 API 未標示）。到場再確認。', evChargeDetail: '商場充電，價錢請查現場／商場 App' },
     '79': { note: '海旁寫字樓，有 EV 充電。' },
     '77': { nameEn: 'Kingston International Center', note: '近 MegaBox 一帶，EV 位有限。' },
     '30': { name: '德福廣場 D', nameEn: 'Telford Plaza D', note: '九龍灣商場群，現場有 EV 設施。' },
@@ -194,7 +194,8 @@
     '32': { name: '德福廣場 II', nameEn: 'Telford Plaza II', note: '德福廣場停車場群組之一。' },
     '39': { nameEn: 'Choi Tak Estate', note: '屋邨停車場，有 EV 充電。' },
     '118': { name: '德朗邨', nameEn: 'Tak Long Estate', note: '近啟德，政府數據顯示有 15 個 EV 位。' },
-    'tdc8p10': { hasEV: true, nameEn: 'Elements', note: '圓方商場，現場有 EV 充電（政府 API 未標示）。到場再確認。' }
+    'tdc8p10': { hasEV: true, nameEn: 'Elements', note: '圓方商場，現場有 EV 充電（政府 API 未標示）。到場再確認。', evChargeDetail: '商場充電，價錢請查現場／商場 App' },
+    'megabox': { evChargeDetail: '商場充電，價錢請查現場／商場 App' }
   };
 
   // 地區搜尋索引（名稱 + 地理範圍）
@@ -256,6 +257,7 @@
       lat: 22.319389, lng: 114.208056,
       hasEV: true, evSpaces: null,
       note: '熱門商場，有 EV 充電。呢個地點冇政府即時空位數據。',
+      evChargeDetail: '商場充電，價錢請查現場／商場 App',
       district: '觀塘區',
       subDistrict: '九龍灣'
     }
@@ -407,16 +409,61 @@
     localStorage.setItem(STORAGE_CARPARKS, JSON.stringify({ ts: Date.now(), data }));
   }
 
+  function parseEvChargeFromRemark(rm) {
+    if (!rm) return { detail: null, min: null };
+    const prices = [...rm.matchAll(/([\d.]+)\s*\/?\s*kWh/gi)].map(m => parseFloat(m[1]));
+    const detail = rm.replace(/HKD\$?/gi, '$').replace(/,/g, '，').trim();
+    return { detail, min: prices.length ? Math.min(...prices) : null };
+  }
+
+  function extractPricing(pc) {
+    const hourly = pc?.hourlyCharges || [];
+    const parkHourly = hourly.find(h => h.price != null)?.price ?? null;
+    let evChargeDetail = null, evChargeMin = null;
+    for (const h of hourly) {
+      const rm = (h.remark || '').trim();
+      if (!/kWh|kwh|度電|充電/i.test(rm)) continue;
+      const parsed = parseEvChargeFromRemark(rm);
+      if (parsed.detail) {
+        evChargeDetail = parsed.detail;
+        evChargeMin = parsed.min;
+        break;
+      }
+    }
+    return { parkHourly, evChargeDetail, evChargeMin };
+  }
+
+  function applyPricingFields(cp, pricing, overrideKey) {
+    const o = CURATED_OVERRIDES[overrideKey || cp.govId || cp.id] || {};
+    return {
+      ...cp,
+      parkHourly: o.parkHourly ?? pricing.parkHourly ?? cp.parkHourly ?? null,
+      evChargeDetail: o.evChargeDetail ?? pricing.evChargeDetail ?? cp.evChargeDetail ?? null,
+      evChargeMin: o.evChargeMin ?? pricing.evChargeMin ?? cp.evChargeMin ?? null
+    };
+  }
+
+  function priceSummary(cp) {
+    const parts = [];
+    if (cp.parkHourly != null) parts.push(`泊車 $${cp.parkHourly}/hr`);
+    if (cp.evChargeMin != null) parts.push(`充電 ~$${cp.evChargeMin}/kWh`);
+    else if (cp.evChargeDetail) {
+      const s = cp.evChargeDetail.length > 22 ? cp.evChargeDetail.slice(0, 22) + '…' : cp.evChargeDetail;
+      parts.push(s);
+    }
+    return parts.length ? parts.join(' · ') : null;
+  }
+
   function enrichSeedPark(p) {
     const o = CURATED_OVERRIDES[p.govId] || {};
-    return {
+    return applyPricingFields({
       ...p,
       name: o.name || p.name,
       nameEn: o.nameEn || null,
       note: o.note || p.note || (p.evSpaces ? `政府數據：${p.evSpaces} 個 EV 位` : null),
       hasEV: o.hasEV !== undefined ? o.hasEV : p.hasEV,
       subDistrict: p.subDistrict || ''
-    };
+    }, extractPricing({ hourlyCharges: p.parkHourly != null ? [{ price: p.parkHourly }] : [] }), p.govId);
   }
 
   function buildSeedCarParks() {
@@ -466,7 +513,7 @@
     const pc = r.privateCar || {};
     const hasEV = o.hasEV !== undefined ? o.hasEV : fac.includes('evCharger');
     const evSpaces = pc.spaceEV > 0 ? pc.spaceEV : (o.evSpaces ?? null);
-    return {
+    return applyPricingFields({
       id: String(govId),
       govId,
       name: o.name || r.name,
@@ -479,7 +526,7 @@
       note: o.note || (hasEV && evSpaces ? `政府數據：${evSpaces} 個 EV 位` : null),
       district: r.district || r.address?.dcDistrict || '',
       subDistrict: r.address?.subDistrict || ''
-    };
+    }, extractPricing(pc), govId);
   }
 
   async function fetchCarParkInfo(force = false) {
@@ -823,6 +870,7 @@
         : report?.chargerStatus === 'broken'
           ? '<span class="text-amber-400 text-xs">充電器有問題</span>'
           : '';
+      const price = priceSummary(cp);
       return `
         <button type="button" data-id="${cp.id}"
           class="w-full text-left p-3 rounded-xl bg-slate-800 active:bg-slate-700 border border-slate-700/50">
@@ -840,6 +888,7 @@
             <span class="${vl.color}">${esc(vl.text)}</span>
             ${badge}
           </div>
+          ${price ? `<p class="text-xs text-slate-500 mt-1 truncate">💰 ${esc(price)}</p>` : ''}
         </button>`;
     }).join('');
 
@@ -882,6 +931,15 @@
           ${lastApi ? `<p class="text-xs text-slate-500">政府數據：${formatTime(lastApi)}</p>` : '<p class="text-xs text-slate-500">冇政府即時數據</p>'}
         </div>
       </div>
+
+      ${(cp.parkHourly != null || cp.evChargeDetail) ? `
+      <div class="bg-slate-800/80 rounded-xl p-3 space-y-2">
+        <p class="text-xs font-medium text-slate-300">💰 收費參考</p>
+        ${cp.parkHourly != null ? `<p class="text-sm"><span class="text-slate-400">泊車</span> <span class="text-slate-200">$${cp.parkHourly}/小時</span> <span class="text-xs text-slate-500">（政府數據）</span></p>` : ''}
+        ${cp.evChargeDetail ? `<p class="text-sm"><span class="text-slate-400">充電</span> <span class="text-emerald-300/90">${esc(cp.evChargeDetail)}</span></p>` : (cp.hasEV ? '<p class="text-sm text-slate-500">充電價錢未有公開數據 — 到場或查商場 App</p>' : '')}
+        <p class="text-xs text-slate-600">價錢可能有變，以現場／充電 App 為準</p>
+      </div>` : (cp.hasEV ? `
+      <p class="text-xs text-slate-500 bg-slate-800/50 rounded-lg p-2">充電同泊車價錢未有公開數據 — 建議到場或查商場 App 確認</p>` : '')}
 
       <a href="${gmaps}" target="_blank" rel="noopener"
         class="tap-target block w-full text-center py-4 rounded-2xl bg-emerald-600 active:bg-emerald-500
