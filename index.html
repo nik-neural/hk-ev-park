@@ -469,7 +469,7 @@
   function buildSeedCarParks() {
     const byId = new Map();
     for (const p of SEED_EV_PARKS) byId.set(p.id, enrichSeedPark(p));
-    for (const extra of CURATED_EXTRAS) byId.set(extra.id, { ...extra });
+    for (const extra of CURATED_EXTRAS) byId.set(extra.id, applyPricingFields({ ...extra }, {}, extra.id));
     return [...byId.values()];
   }
 
