@@ -4,6 +4,10 @@
 
 ## 使用
 
-打開：https://nik-neural.github.io/hk-ev-park/
+**手機開啟：** https://nik-neural.github.io/hk-ev-park/
 
-手機 Safari / Chrome → 分享 → 加入主畫面（PWA）
+Safari / Chrome → 分享 → **加入主畫面**（可當 PWA 用）
+
+## 同圓子基金一樣
+
+GitHub Pages 部署，同 [circle-fund](https://nik-neural.github.io/circle-fund/) 一樣用法。
