@@ -9,9 +9,10 @@
   <meta name="description" content="全香港 EV 停車場搜尋，即時空位一目了然" />
   <title>香港 EV 泊車</title>
 
-  <!-- PWA manifest injected at runtime (single-file friendly) -->
-  <link rel="manifest" id="pwa-manifest" />
-  <link rel="apple-touch-icon" id="apple-icon" />
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -161,7 +162,7 @@
    * Solves: "arrived but no parking / broken charger" via map + gov vacancy + reports
    * ============================================================================= */
 
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '1.1.0';
   const STORAGE_REPORTS = 'hkev_reports_v1';
   const STORAGE_CACHE = 'hkev_vacancy_cache_v1';
   const STORAGE_CARPARKS = 'hkev_carparks_cache_v3';
@@ -301,68 +302,10 @@
   let fullDataReady = false;
   let bootstrapActive = false;
 
-  /* ----- PWA: manifest + icons ----- */
+  /* ----- PWA: service worker ----- */
   function setupPWA() {
-    const iconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-      <rect width="512" height="512" rx="96" fill="#059669"/>
-      <text x="256" y="300" text-anchor="middle" font-size="200" fill="white">⚡</text>
-    </svg>`;
-    const iconUrl = 'data:image/svg+xml,' + encodeURIComponent(iconSvg);
-    document.getElementById('apple-icon').href = iconUrl;
-
-    const manifest = {
-      name: '香港 EV 泊車',
-      short_name: 'EV 泊車',
-      description: '全香港 EV 停車場即時空位',
-      start_url: location.origin + location.pathname + location.search,
-      display: 'standalone',
-      background_color: '#0f172a',
-      theme_color: '#059669',
-      orientation: 'portrait-primary',
-      icons: [
-        { src: iconUrl, sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }
-      ]
-    };
-    const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
-    document.getElementById('pwa-manifest').href = URL.createObjectURL(manifestBlob);
-
-    // Inline service worker via Blob URL
-    const swCode = `
-      const CACHE = 'hkev-static-v${APP_VERSION}';
-      const PRECACHE = [
-        'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
-        'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
-        'https://cdn.tailwindcss.com'
-      ];
-      self.addEventListener('install', e => {
-        e.waitUntil(caches.open(CACHE).then(c => c.addAll(PRECACHE).catch(() => {})));
-        self.skipWaiting();
-      });
-      self.addEventListener('activate', e => {
-        e.waitUntil(self.clients.claim());
-      });
-      self.addEventListener('fetch', e => {
-        const url = e.request.url;
-        // Cache CDN assets; network-first for API with cache fallback
-        if (url.includes('api.data.gov.hk')) {
-          e.respondWith(
-            fetch(e.request).then(res => {
-              const clone = res.clone();
-              caches.open(CACHE).then(c => c.put(e.request, clone));
-              return res;
-            }).catch(() => caches.match(e.request))
-          );
-          return;
-        }
-        if (PRECACHE.some(p => url.startsWith(p.split('?')[0]))) {
-          e.respondWith(caches.match(e.request).then(c => c || fetch(e.request)));
-          return;
-        }
-      });
-    `;
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-      const swBlob = new Blob([swCode], { type: 'application/javascript' });
-      navigator.serviceWorker.register(URL.createObjectURL(swBlob)).catch(() => {});
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
     }
   }
 

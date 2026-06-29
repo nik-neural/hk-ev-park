@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="香港 EV 泊車">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#0f172a"/>
+  <rect x="48" y="48" width="416" height="416" rx="96" fill="url(#bg)"/>
+  <path fill="#fff" d="M278 118 198 286h62l-18 108 112-178h-62l-14-98z"/>
+  <circle cx="382" cy="382" r="52" fill="#0f172a" opacity="0.22"/>
+  <text x="382" y="402" text-anchor="middle" font-family="system-ui,sans-serif" font-size="56" font-weight="700" fill="#ecfdf5">P</text>
+</svg>
