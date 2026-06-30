@@ -98,7 +98,7 @@
       <!-- Filters -->
       <div class="flex gap-2 mt-2 overflow-x-auto hide-scroll pb-1">
         <label class="filter-chip shrink-0">
-          <input type="checkbox" id="filter-ev" checked class="sr-only peer" />
+          <input type="checkbox" id="filter-ev" class="sr-only peer" />
           <span class="chip peer-checked:bg-emerald-600 peer-checked:border-emerald-500">⚡ 淨係 EV</span>
         </label>
         <label class="filter-chip shrink-0">
@@ -162,10 +162,10 @@
    * Solves: "arrived but no parking / broken charger" via map + gov vacancy + reports
    * ============================================================================= */
 
-  const APP_VERSION = '1.1.2';
+  const APP_VERSION = '1.1.3';
   const STORAGE_REPORTS = 'hkev_reports_v1';
   const STORAGE_CACHE = 'hkev_vacancy_cache_v1';
-  const STORAGE_CARPARKS = 'hkev_carparks_cache_v4';
+  const STORAGE_CARPARKS = 'hkev_carparks_cache_v5';
   const MAP_MARKER_LIMIT = 80;
   const NEAR_RADIUS_KM = 3;
   const NEARBY_BOOTSTRAP_COUNT = 10;
@@ -282,10 +282,10 @@
 
   // 地區種子 — 全港 API 未載入時仍可按地區顯示（govId 可攞空位）
   const REGION_SEED_PARKS = [
-    { id:'tdstt30', govId:'tdstt30', name:'海庭道', address:'九龍油麻地海庭道', lat:22.31401294, lng:114.16276657, district:'油尖旺區', subDistrict:'大角咀' },
+    { id:'tdstt30', govId:'tdstt30', name:'海庭道', address:'九龍油麻地海庭道', lat:22.31401294, lng:114.16276657, district:'油尖旺區', subDistrict:'大角咀', parkPriceDetail:'$8/半小時' },
     { id:'tdc14p8428', govId:'tdc14p8428', name:'海富停車場', address:'九龍旺角海庭路2號海富商場', lat:22.31575, lng:114.165453, district:'油尖旺區', subDistrict:'大角咀' },
     { id:'tdc26p2', govId:'tdc26p2', name:'始創中心停車場', address:'西洋菜南街133號', lat:22.32224464, lng:114.16905212, district:'油尖旺區', subDistrict:'大角咀' },
-    { id:'tdc57p1', govId:'tdc57p1', name:'西九龍政府合署', address:'香港九龍油麻地海庭道11號', lat:22.31258215, lng:114.1633103, district:'油尖旺區', subDistrict:'大角咀' },
+    { id:'tdc57p1', govId:'tdc57p1', name:'西九龍政府合署', address:'香港九龍油麻地海庭道11號', lat:22.31258215, lng:114.1633103, district:'油尖旺區', subDistrict:'大角咀', parkPriceDetail:'平日 $6/半小時；週末 $8/半小時' },
     { id:'tdstt92', govId:'tdstt92', name:'海泓道麗翔道交界', address:'九龍海泓道與麗翔路交界處', lat:22.31233422, lng:114.16443189, district:'油尖旺區', subDistrict:'大角咀' }
   ];
 
@@ -366,7 +366,7 @@
   }
 
   function loadCarParkCache() {
-    const keys = [STORAGE_CARPARKS, 'hkev_carparks_cache_v3'];
+    const keys = [STORAGE_CARPARKS, 'hkev_carparks_cache_v4', 'hkev_carparks_cache_v3'];
     for (const key of keys) {
       try {
         const c = JSON.parse(localStorage.getItem(key) || 'null');
@@ -390,6 +390,17 @@
     return { detail, min: prices.length ? Math.min(...prices) : null };
   }
 
+  function cleanGovRemark(rm) {
+    if (!rm) return '';
+    return rm
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/<[^>]+>/g, '')
+      .replace(/高度限制[:：]?\s*/gi, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
   function extractPricing(pc) {
     const hourly = pc?.hourlyCharges || [];
     const parkHourly = hourly.find(h => h.price != null)?.price ?? null;
@@ -404,7 +415,58 @@
         break;
       }
     }
-    return { parkHourly, evChargeDetail, evChargeMin };
+    return { parkHourly, parkPriceDetail: null, evChargeDetail, evChargeMin };
+  }
+
+  function extractPricingFromRemark(rm) {
+    const text = cleanGovRemark(rm);
+    if (!text) return { parkHourly: null, parkPriceDetail: null, evChargeDetail: null, evChargeMin: null };
+
+    let parkHourly = null, parkPriceDetail = null;
+    let evChargeDetail = null, evChargeMin = null;
+
+    if (/kWh|kwh|度電|充電/i.test(text)) {
+      const parsed = parseEvChargeFromRemark(text);
+      evChargeDetail = parsed.detail;
+      evChargeMin = parsed.min;
+    }
+
+    const hourly = text.match(/\$\s*([\d.]+)\s*\/\s*小時/);
+    if (hourly) parkHourly = parseFloat(hourly[1]);
+
+    if (parkHourly == null) {
+      const half = text.match(/(?:每)?半小時\s*\$\s*([\d.]+)|\$\s*([\d.]+)\s*\/\s*半小時/);
+      if (half) {
+        const price = parseFloat(half[1] || half[2]);
+        parkPriceDetail = `$${price}/半小時`;
+      }
+    }
+
+    if (parkHourly == null && parkPriceDetail == null && /\$\s*[\d.]/.test(text)) {
+      const lines = text.split('\n')
+        .map(l => l.trim())
+        .filter(l => /\$\s*[\d.]/.test(l) && !/^\d+(\.\d+)?\s*米/.test(l));
+      if (lines.length) {
+        parkPriceDetail = lines.slice(0, 3).join('；');
+        if (lines.length > 3) parkPriceDetail += '…';
+      }
+    }
+
+    return { parkHourly, parkPriceDetail, evChargeDetail, evChargeMin };
+  }
+
+  function mergePricing(fromPc, fromRm) {
+    const parkHourly = fromPc.parkHourly ?? fromRm.parkHourly ?? null;
+    return {
+      parkHourly,
+      parkPriceDetail: parkHourly != null ? null : (fromRm.parkPriceDetail ?? null),
+      evChargeDetail: fromPc.evChargeDetail ?? fromRm.evChargeDetail ?? null,
+      evChargeMin: fromPc.evChargeMin ?? fromRm.evChargeMin ?? null
+    };
+  }
+
+  function govRemarkText(r) {
+    return (r.heightLimits || []).map(h => h.remark || '').filter(Boolean).join('\n');
   }
 
   function applyPricingFields(cp, pricing, overrideKey) {
@@ -412,14 +474,19 @@
     return {
       ...cp,
       parkHourly: o.parkHourly ?? pricing.parkHourly ?? cp.parkHourly ?? null,
+      parkPriceDetail: o.parkPriceDetail ?? pricing.parkPriceDetail ?? cp.parkPriceDetail ?? null,
       evChargeDetail: o.evChargeDetail ?? pricing.evChargeDetail ?? cp.evChargeDetail ?? null,
       evChargeMin: o.evChargeMin ?? pricing.evChargeMin ?? cp.evChargeMin ?? null
     };
   }
 
-  function parkPriceLabel(cp) {
-    if (cp.parkHourly == null) return null;
-    return `$${cp.parkHourly}/小時`;
+  function parkPriceLabel(cp, short = false) {
+    if (cp.parkHourly != null) return `$${cp.parkHourly}/小時`;
+    if (cp.parkPriceDetail) {
+      const s = cp.parkPriceDetail;
+      return short && s.length > 28 ? s.slice(0, 28) + '…' : s;
+    }
+    return null;
   }
 
   function evPriceLabel(cp, short = false) {
@@ -435,7 +502,7 @@
   }
 
   function renderListPrices(cp) {
-    const park = parkPriceLabel(cp);
+    const park = parkPriceLabel(cp, true);
     const ev = cp.hasEV ? evPriceLabel(cp, true) : null;
     if (!park && !ev) return '';
     const parkHtml = park
@@ -448,14 +515,15 @@
   }
 
   function renderDetailPrices(cp) {
-    const park = parkPriceLabel(cp);
+    const park = parkPriceLabel(cp, false);
     const ev = cp.hasEV ? evPriceLabel(cp, false) : null;
+    const parkLong = park && park.length > 18;
     if (!park && !ev && !cp.hasEV) return '';
     return `
       <div class="grid grid-cols-2 gap-3">
         <div class="bg-slate-800 rounded-xl p-3 min-h-[5.5rem]">
           <p class="text-xs text-slate-400">🅿️ 泊車收費</p>
-          <p class="text-lg font-bold text-slate-200 mt-0.5">${park ? esc(park) : '—'}</p>
+          <p class="${parkLong ? 'text-sm' : 'text-lg'} font-bold text-slate-200 mt-0.5 leading-snug">${park ? esc(park) : '—'}</p>
           <p class="text-xs text-slate-500 mt-1">${park ? '政府數據' : '未有公開數據'}</p>
         </div>
         <div class="bg-slate-800 rounded-xl p-3 min-h-[5.5rem]">
@@ -542,7 +610,7 @@
       note: o.note || (hasEV && evSpaces ? `政府數據：${evSpaces} 個 EV 位` : null),
       district: r.district || r.address?.dcDistrict || '',
       subDistrict: r.address?.subDistrict || ''
-    }, extractPricing(pc), govId);
+    }, mergePricing(extractPricing(pc), extractPricingFromRemark(govRemarkText(r))), govId);
   }
 
   async function fetchCarParkInfo(force = false) {
@@ -651,7 +719,7 @@
   }
 
   async function loadFullDataInBackground() {
-    setStatus('附近 EV 已顯示 · 背景載入全港資料…');
+    setStatus('附近停車場已顯示 · 背景載入全港資料…');
     await ensureFullData();
     render();
   }
@@ -780,9 +848,9 @@
     const spacesOnly = document.getElementById('filter-spaces').checked;
     const query = getSearchQuery();
 
-    // 快速啟動：未載入全港資料時，預設顯示附近 10 個 EV 站
+    // 快速啟動：未載入全港資料時，預設顯示附近停車場
     if (bootstrapActive && !fullDataReady && !query && !nearOnly) {
-      let list = CARPARKS.filter(cp => cp.hasEV);
+      let list = CARPARKS.filter(cp => !evOnly || cp.hasEV);
       if (spacesOnly) list = applySpacesFilter(list);
       return sortByDistance(list, getPositionAnchor()).slice(0, NEARBY_BOOTSTRAP_COUNT);
     }
@@ -1086,7 +1154,7 @@
     saveLastPosition();
     showUserLocation(userPos.lat, userPos.lng);
     if (bootstrapActive && !fullDataReady) {
-      setStatus(`附近 ${NEARBY_BOOTSTRAP_COUNT} 個 EV 站 · 誤差約 ±${Math.round(accuracy)} 米`);
+      setStatus(`附近 ${NEARBY_BOOTSTRAP_COUNT} 個停車場 · 誤差約 ±${Math.round(accuracy)} 米`);
     } else {
       setStatus(`已找到位置 · 誤差約 ±${Math.round(accuracy)} 米`);
     }
@@ -1099,7 +1167,7 @@
       navigator.geolocation.getCurrentPosition(
         pos => { onLocationFound(pos, pos.coords.accuracy); resolve(true); },
         () => {
-          if (!userPos) setStatus('定位被拒絕 — 顯示預設附近 EV 站');
+          if (!userPos) setStatus('定位被拒絕 — 顯示預設附近停車場');
           resolve(false);
         },
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 120000 }
@@ -1171,12 +1239,12 @@
       else setStatus(`已更新快取 · 全港 ${CARPARKS.length} 個停車場`);
       render();
     } else {
-      // 首次載入：種子資料即時顯示附近 10 個 EV 站
+      // 首次載入：種子資料即時顯示附近停車場
       CARPARKS = buildSeedCarParks();
       bootstrapActive = true;
       fullDataReady = false;
       restoreLastPosition();
-      setStatus(`顯示附近 ${NEARBY_BOOTSTRAP_COUNT} 個 EV 站…`);
+      setStatus(`顯示附近 ${NEARBY_BOOTSTRAP_COUNT} 個停車場…`);
       render();
 
       const geoPromise = requestLocationAsync();

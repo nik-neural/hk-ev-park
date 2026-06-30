@@ -1,4 +1,4 @@
-const CACHE = 'hkev-v1.1.2';
+const CACHE = 'hkev-v1.1.3';
 const PRECACHE = [
   './',
   './index.html',
