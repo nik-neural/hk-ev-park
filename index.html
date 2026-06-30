@@ -162,7 +162,7 @@
    * Solves: "arrived but no parking / broken charger" via map + gov vacancy + reports
    * ============================================================================= */
 
-  const APP_VERSION = '1.1.1';
+  const APP_VERSION = '1.1.2';
   const STORAGE_REPORTS = 'hkev_reports_v1';
   const STORAGE_CACHE = 'hkev_vacancy_cache_v1';
   const STORAGE_CARPARKS = 'hkev_carparks_cache_v4';
@@ -197,7 +197,8 @@
     '118': { name: '德朗邨', nameEn: 'Tak Long Estate', note: '近啟德，政府數據顯示有 15 個 EV 位。' },
     'tdc8p10': { hasEV: true, nameEn: 'Elements', note: '圓方商場，現場有 EV 充電（政府 API 未標示）。到場再確認。', evChargeDetail: '商場充電，價錢請查現場／商場 App' },
     'megabox': { evChargeDetail: '商場充電，價錢請查現場／商場 App' },
-    'olympian-city': { nameEn: 'Olympian City', note: '奧海城商場，有 EV 充電（政府 API 未標示）。到場再確認。', evChargeDetail: '商場充電，消費可享免費泊車優惠 — 詳情查商場 App' }
+    'olympian-city': { nameEn: 'Olympian City', note: '奧海城商場，有 EV 充電（政府 API 未標示）。到場再確認。', evChargeDetail: '商場充電，消費可享免費泊車優惠 — 詳情查商場 App' },
+    'tdc14p8428': { hasEV: true, note: '海富商場，有 Shell Recharge 充電（政府 API 未標示）。', evChargeDetail: 'Shell Recharge — 價錢查充電 App' }
   };
 
   // 地區搜尋索引（名稱 + 地理範圍）
@@ -279,6 +280,15 @@
     }
   ];
 
+  // 地區種子 — 全港 API 未載入時仍可按地區顯示（govId 可攞空位）
+  const REGION_SEED_PARKS = [
+    { id:'tdstt30', govId:'tdstt30', name:'海庭道', address:'九龍油麻地海庭道', lat:22.31401294, lng:114.16276657, district:'油尖旺區', subDistrict:'大角咀' },
+    { id:'tdc14p8428', govId:'tdc14p8428', name:'海富停車場', address:'九龍旺角海庭路2號海富商場', lat:22.31575, lng:114.165453, district:'油尖旺區', subDistrict:'大角咀' },
+    { id:'tdc26p2', govId:'tdc26p2', name:'始創中心停車場', address:'西洋菜南街133號', lat:22.32224464, lng:114.16905212, district:'油尖旺區', subDistrict:'大角咀' },
+    { id:'tdc57p1', govId:'tdc57p1', name:'西九龍政府合署', address:'香港九龍油麻地海庭道11號', lat:22.31258215, lng:114.1633103, district:'油尖旺區', subDistrict:'大角咀' },
+    { id:'tdstt92', govId:'tdstt92', name:'海泓道麗翔道交界', address:'九龍海泓道與麗翔路交界處', lat:22.31233422, lng:114.16443189, district:'油尖旺區', subDistrict:'大角咀' }
+  ];
+
   // 內嵌 EV 種子資料 — 無需等 API 即可顯示附近站點
   const SEED_EV_PARKS = [
     { id:'123', govId:'123', name:'觀塘道350號停車場', address:'觀塘道350號，觀塘', lat:22.3150437, lng:114.2179817, hasEV:true, evSpaces:142, district:'觀塘區' },
@@ -356,10 +366,16 @@
   }
 
   function loadCarParkCache() {
-    try {
-      const c = JSON.parse(localStorage.getItem(STORAGE_CARPARKS) || 'null');
-      if (c && Date.now() - c.ts < 24 * 60 * 60_000) return c.data;
-    } catch {}
+    const keys = [STORAGE_CARPARKS, 'hkev_carparks_cache_v3'];
+    for (const key of keys) {
+      try {
+        const c = JSON.parse(localStorage.getItem(key) || 'null');
+        if (c?.data?.length && Date.now() - c.ts < 24 * 60 * 60_000) {
+          if (key !== STORAGE_CARPARKS) saveCarParkCache(c.data);
+          return c.data;
+        }
+      } catch {}
+    }
     return null;
   }
 
@@ -468,6 +484,7 @@
   function buildSeedCarParks() {
     const byId = new Map();
     for (const p of SEED_EV_PARKS) byId.set(p.id, enrichSeedPark(p));
+    for (const p of REGION_SEED_PARKS) byId.set(p.id, enrichSeedPark({ ...p, hasEV: false }));
     for (const extra of CURATED_EXTRAS) byId.set(extra.id, applyPricingFields({ ...extra }, {}, extra.id));
     return [...byId.values()];
   }
@@ -557,8 +574,8 @@
         setStatus('使用快取嘅停車場資料');
         return false;
       }
-      CARPARKS = [...CURATED_EXTRAS];
-      setStatus('停車場資料載入失敗');
+      if (!CARPARKS.length) CARPARKS = buildSeedCarParks();
+      setStatus('停車場資料載入失敗 — 顯示基本資料');
       return false;
     }
   }
@@ -622,12 +639,20 @@
     }
   }
 
+  async function ensureFullData() {
+    if (fullDataReady) return true;
+    const ok = await fetchCarParkInfo();
+    if (ok) {
+      fullDataReady = true;
+      bootstrapActive = false;
+      await fetchVacancy();
+    }
+    return ok;
+  }
+
   async function loadFullDataInBackground() {
     setStatus('附近 EV 已顯示 · 背景載入全港資料…');
-    await fetchCarParkInfo();
-    await fetchVacancy();
-    fullDataReady = true;
-    bootstrapActive = false;
+    await ensureFullData();
     render();
   }
 
@@ -741,8 +766,11 @@
     if (!document.getElementById('filter-spaces').checked) return list;
     return list.filter(cp => {
       const v = getVacancy(cp);
-      if (v) return v.vacancy_type !== 'C' && v.vacancy > 0;
-      return !reports[cp.id]?.parkingFull;
+      if (!v) return !reports[cp.id]?.parkingFull;
+      if (v.vacancy_type === 'C') return false;
+      if (v.vacancy > 0) return true;
+      if (v.vacancy < 0) return true; // 政府報 -1 = 未有準確空位數，唔當滿
+      return false;
     });
   }
 
@@ -1022,13 +1050,20 @@
     }
   }
 
-  function onSearchInput() {
+  async function onSearchInput() {
     const input = document.getElementById('search-input');
     const clearBtn = document.getElementById('search-clear');
-    clearBtn.hidden = !input.value;
-    if (input.value.trim()) bootstrapActive = false;
+    const q = input.value.trim();
+    clearBtn.hidden = !q;
+    if (q) {
+      bootstrapActive = false;
+      if (detectArea(q) && !fullDataReady) {
+        setStatus('正在載入全港停車場…');
+        await ensureFullData();
+      }
+    }
     render();
-    if (input.value.trim()) {
+    if (q) {
       const panel = document.getElementById('list-panel');
       panel.style.maxHeight = '55vh';
       listExpanded = true;
