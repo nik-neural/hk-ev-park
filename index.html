@@ -85,7 +85,7 @@
       <div class="relative mt-2">
         <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">🔍</span>
         <input id="search-input" type="search" enterkeyhint="search" autocomplete="off"
-          placeholder="搜尋地區或停車場，例如：尖沙咀、觀塘…"
+          placeholder="搜尋地區或停車場，例如：尖沙咀、大角咀、觀塘…"
           class="w-full pl-9 pr-9 py-2.5 rounded-xl bg-slate-800 border border-slate-700
                  text-sm text-slate-100 placeholder:text-slate-500
                  focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600" />
@@ -162,10 +162,10 @@
    * Solves: "arrived but no parking / broken charger" via map + gov vacancy + reports
    * ============================================================================= */
 
-  const APP_VERSION = '1.1.0';
+  const APP_VERSION = '1.1.1';
   const STORAGE_REPORTS = 'hkev_reports_v1';
   const STORAGE_CACHE = 'hkev_vacancy_cache_v1';
-  const STORAGE_CARPARKS = 'hkev_carparks_cache_v3';
+  const STORAGE_CARPARKS = 'hkev_carparks_cache_v4';
   const MAP_MARKER_LIMIT = 80;
   const NEAR_RADIUS_KM = 3;
   const NEARBY_BOOTSTRAP_COUNT = 10;
@@ -196,7 +196,8 @@
     '39': { nameEn: 'Choi Tak Estate', note: '屋邨停車場，有 EV 充電。' },
     '118': { name: '德朗邨', nameEn: 'Tak Long Estate', note: '近啟德，政府數據顯示有 15 個 EV 位。' },
     'tdc8p10': { hasEV: true, nameEn: 'Elements', note: '圓方商場，現場有 EV 充電（政府 API 未標示）。到場再確認。', evChargeDetail: '商場充電，價錢請查現場／商場 App' },
-    'megabox': { evChargeDetail: '商場充電，價錢請查現場／商場 App' }
+    'megabox': { evChargeDetail: '商場充電，價錢請查現場／商場 App' },
+    'olympian-city': { nameEn: 'Olympian City', note: '奧海城商場，有 EV 充電（政府 API 未標示）。到場再確認。', evChargeDetail: '商場充電，消費可享免費泊車優惠 — 詳情查商場 App' }
   };
 
   // 地區搜尋索引（名稱 + 地理範圍）
@@ -213,6 +214,7 @@
     { label: '佐敦', names: ['佐敦', 'jordan'], bounds: { south: 22.302, west: 114.168, north: 22.312, east: 114.176 } },
     { label: '油麻地', names: ['油麻地', 'yau ma tei'], bounds: { south: 22.305, west: 114.168, north: 22.318, east: 114.178 } },
     { label: '旺角', names: ['旺角', 'mong kok', 'mk'], bounds: { south: 22.312, west: 114.165, north: 22.328, east: 114.178 } },
+    { label: '大角咀', names: ['大角咀', '大角嘴', 'tai kok tsui', '奧運', 'olympic'], bounds: { south: 22.308, west: 114.155, north: 22.325, east: 114.172 } },
     { label: '油尖旺', names: ['油尖旺', 'yau tsim mong'], bounds: { south: 22.290, west: 114.158, north: 22.328, east: 114.185 } },
     { label: '深水埗', names: ['深水埗', 'sham shui po', 'ssp'], bounds: { south: 22.325, west: 114.152, north: 22.342, east: 114.168 } },
     { label: '長沙灣', names: ['長沙灣', 'cheung sha wan'], bounds: { south: 22.332, west: 114.148, north: 22.348, east: 114.162 } },
@@ -261,6 +263,19 @@
       evChargeDetail: '商場充電，價錢請查現場／商場 App',
       district: '觀塘區',
       subDistrict: '九龍灣'
+    },
+    {
+      id: 'olympian-city',
+      govId: null,
+      name: '奧海城停車場',
+      nameEn: 'Olympian City Car Park',
+      address: '海輝道18號，大角咀',
+      lat: 22.3174, lng: 114.1597,
+      hasEV: true, evSpaces: null,
+      note: '政府 API 未收錄。商場有 EV 充電，消費可享泊車優惠。',
+      evChargeDetail: '商場充電，消費可享免費泊車優惠 — 詳情查商場 App',
+      district: '油尖旺區',
+      subDistrict: '大角咀'
     }
   ];
 
