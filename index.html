@@ -54,6 +54,11 @@
     /* Hide scrollbar on list but keep scroll */
     .hide-scroll::-webkit-scrollbar { display: none; }
     .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+    .map-locate-btn {
+      box-shadow: 0 2px 10px rgba(0,0,0,.45);
+    }
+    .map-locate-btn:active { transform: scale(0.95); }
+    .map-locate-btn svg { width: 22px; height: 22px; }
   </style>
 </head>
 
@@ -114,7 +119,20 @@
     </header>
 
     <!-- Map -->
-    <div id="map" class="flex-1 min-h-0 z-0"></div>
+    <div class="flex-1 min-h-0 relative z-0">
+      <div id="map" class="absolute inset-0"></div>
+      <button id="btn-map-locate" type="button" title="返回我嘅位置" aria-label="返回我嘅位置"
+        class="map-locate-btn tap-target absolute bottom-14 right-3 z-[1000] w-11 h-11 rounded-xl
+               bg-slate-900/95 border border-slate-700 text-blue-400
+               active:bg-slate-800 flex items-center justify-center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="7"/>
+          <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/>
+          <path d="M12 5V2M12 22v-3M5 12H2M22 12h-3"/>
+        </svg>
+      </button>
+    </div>
 
     <!-- Bottom list (peek) -->
     <div id="list-panel"
@@ -162,7 +180,7 @@
    * Solves: "arrived but no parking / broken charger" via map + gov vacancy + reports
    * ============================================================================= */
 
-  const APP_VERSION = '1.2.0';
+  const APP_VERSION = '1.2.1';
   const STORAGE_REPORTS = 'hkev_reports_v1';
   const STORAGE_CACHE = 'hkev_vacancy_cache_v1';
   const STORAGE_CARPARKS = 'hkev_carparks_cache_v6';
@@ -998,14 +1016,19 @@
     });
   }
 
-  function showUserLocation(lat, lng) {
+  function flyToUser(zoom = 16) {
+    if (!userPos || !map) return false;
+    map.flyTo([userPos.lat, userPos.lng], Math.max(map.getZoom(), zoom), { duration: 0.45 });
+    return true;
+  }
+
+  function showUserLocation(lat, lng, recenter = false) {
     if (userMarker) map.removeLayer(userMarker);
     userMarker = L.circleMarker([lat, lng], {
       radius: 8, color: '#60a5fa', fillColor: '#3b82f6', fillOpacity: 0.9, weight: 3
     }).addTo(map);
-    if (document.getElementById('filter-near').checked) {
-      map.setView([lat, lng], 15);
-    }
+    if (recenter) flyToUser();
+    else if (document.getElementById('filter-near').checked) flyToUser(15);
   }
 
   /* ----- List & detail UI ----- */
@@ -1212,10 +1235,10 @@
   }
 
   /* ----- Geolocation ----- */
-  function onLocationFound(pos, accuracy) {
+  function onLocationFound(pos, accuracy, recenter = false) {
     userPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     saveLastPosition();
-    showUserLocation(userPos.lat, userPos.lng);
+    showUserLocation(userPos.lat, userPos.lng, recenter);
     if (bootstrapActive && !fullDataReady) {
       setStatus(`附近 ${NEARBY_BOOTSTRAP_COUNT} 個停車場 · 誤差約 ±${Math.round(accuracy)} 米`);
     } else {
@@ -1224,24 +1247,36 @@
     render();
   }
 
-  function requestLocationAsync() {
+  function requestLocationAsync(opts = {}) {
+    const { recenter = false, quiet = false } = opts;
     return new Promise(resolve => {
       if (!navigator.geolocation) { resolve(false); return; }
       navigator.geolocation.getCurrentPosition(
-        pos => { onLocationFound(pos, pos.coords.accuracy); resolve(true); },
+        pos => { onLocationFound(pos, pos.coords.accuracy, recenter); resolve(true); },
         () => {
           if (!userPos) setStatus('定位被拒絕 — 顯示預設附近停車場');
+          else if (!quiet) setStatus('定位更新失敗 — 使用上次位置');
           resolve(false);
         },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 120000 }
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: recenter ? 0 : 120000 }
       );
     });
   }
 
-  function requestLocation() {
+  function recenterOnUser() {
     if (!navigator.geolocation) { setStatus('呢部機唔支援定位'); return; }
+    if (userPos) {
+      flyToUser();
+      setStatus('已返回你嘅位置');
+      requestLocationAsync({ quiet: true });
+      return;
+    }
     setStatus('正在定位…');
-    requestLocationAsync();
+    requestLocationAsync({ recenter: true });
+  }
+
+  function requestLocation() {
+    recenterOnUser();
   }
 
   /* ----- Events ----- */
@@ -1261,7 +1296,8 @@
     searchInput.addEventListener('search', onSearchInput);
     document.getElementById('search-clear').addEventListener('click', clearSearch);
 
-    document.getElementById('btn-locate').addEventListener('click', requestLocation);
+    document.getElementById('btn-locate').addEventListener('click', recenterOnUser);
+    document.getElementById('btn-map-locate').addEventListener('click', recenterOnUser);
     document.getElementById('btn-refresh').addEventListener('click', async () => {
       document.getElementById('btn-refresh').classList.add('animate-spin');
       await Promise.all([fetchCarParkInfo(true), fetchVacancy()]);
