@@ -1,7 +1,8 @@
-const CACHE = 'hkev-v1.1.3';
+const CACHE = 'hkev-v1.2.0';
 const PRECACHE = [
   './',
   './index.html',
+  './data/pricing.json',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

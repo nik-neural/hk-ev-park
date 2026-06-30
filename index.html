@@ -162,10 +162,10 @@
    * Solves: "arrived but no parking / broken charger" via map + gov vacancy + reports
    * ============================================================================= */
 
-  const APP_VERSION = '1.1.3';
+  const APP_VERSION = '1.2.0';
   const STORAGE_REPORTS = 'hkev_reports_v1';
   const STORAGE_CACHE = 'hkev_vacancy_cache_v1';
-  const STORAGE_CARPARKS = 'hkev_carparks_cache_v5';
+  const STORAGE_CARPARKS = 'hkev_carparks_cache_v6';
   const MAP_MARKER_LIMIT = 80;
   const NEAR_RADIUS_KM = 3;
   const NEARBY_BOOTSTRAP_COUNT = 10;
@@ -314,6 +314,7 @@
   ];
 
   let CARPARKS = [];
+  let PRICING_LOOKUP = {};
 
   /* ----- State ----- */
   let map, markersLayer, userMarker, areaLayer;
@@ -366,7 +367,7 @@
   }
 
   function loadCarParkCache() {
-    const keys = [STORAGE_CARPARKS, 'hkev_carparks_cache_v4', 'hkev_carparks_cache_v3'];
+    const keys = [STORAGE_CARPARKS, 'hkev_carparks_cache_v5', 'hkev_carparks_cache_v4', 'hkev_carparks_cache_v3'];
     for (const key of keys) {
       try {
         const c = JSON.parse(localStorage.getItem(key) || 'null');
@@ -431,38 +432,88 @@
       evChargeMin = parsed.min;
     }
 
-    const hourly = text.match(/\$\s*([\d.]+)\s*\/\s*小時/);
-    if (hourly) parkHourly = parseFloat(hourly[1]);
-
-    if (parkHourly == null) {
-      const half = text.match(/(?:每)?半小時\s*\$\s*([\d.]+)|\$\s*([\d.]+)\s*\/\s*半小時/);
-      if (half) {
-        const price = parseFloat(half[1] || half[2]);
-        parkPriceDetail = `$${price}/半小時`;
-      }
+    const hourlyVals = [];
+    const patterns = [
+      /\$\s*([\d.]+)\s*\/\s*小時/g,
+      /\$\s*([\d.]+)\s*每小時/g,
+      /每小時\s*\$\s*([\d.]+)/g,
+      /([\d.]+)\s*港幣\s*\/\s*小時/g,
+      /每小時\s*([\d.]+)\s*元/g,
+      /每小時收費港幣\s*([\d.]+)\s*元/g
+    ];
+    for (const re of patterns) {
+      for (const m of text.matchAll(re)) hourlyVals.push(parseFloat(m[1]));
     }
 
-    if (parkHourly == null && parkPriceDetail == null && /\$\s*[\d.]/.test(text)) {
+    const half = text.match(/(?:每)?半小時\s*\$\s*([\d.]+)|\$\s*([\d.]+)\s*\/\s*半小時/);
+    if (half) {
+      parkPriceDetail = `$${parseFloat(half[1] || half[2])}/半小時`;
+    } else if (hourlyVals.length === 1) {
+      parkHourly = hourlyVals[0];
+    } else if (hourlyVals.length > 1) {
+      const uniq = [...new Set(hourlyVals)];
+      if (uniq.length === 1) parkHourly = uniq[0];
+    }
+
+    if (parkHourly == null && parkPriceDetail == null) {
       const lines = text.split('\n')
         .map(l => l.trim())
-        .filter(l => /\$\s*[\d.]/.test(l) && !/^\d+(\.\d+)?\s*米/.test(l));
+        .filter(l => l && (/\$\s*[\d.]|[\d.]+\s*元|港幣/.test(l)) && !/^\d+(\.\d+)?\s*米/.test(l));
       if (lines.length) {
         parkPriceDetail = lines.slice(0, 3).join('；');
         if (lines.length > 3) parkPriceDetail += '…';
       }
     }
 
+    if (parkHourly != null) parkPriceDetail = null;
     return { parkHourly, parkPriceDetail, evChargeDetail, evChargeMin };
   }
 
-  function mergePricing(fromPc, fromRm) {
-    const parkHourly = fromPc.parkHourly ?? fromRm.parkHourly ?? null;
+  function mergePricingSources(...sources) {
+    const out = { parkHourly: null, parkPriceDetail: null, evChargeDetail: null, evChargeMin: null };
+    for (const s of sources) {
+      if (!s) continue;
+      for (const k of Object.keys(out)) {
+        if (out[k] == null && s[k] != null) out[k] = s[k];
+      }
+    }
+    if (out.parkHourly != null) out.parkPriceDetail = null;
+    return out;
+  }
+
+  async function loadPricingLookup() {
+    try {
+      const res = await fetch('./data/pricing.json');
+      if (res.ok) PRICING_LOOKUP = await res.json();
+    } catch (err) {
+      console.warn('Pricing lookup load failed:', err);
+    }
+  }
+
+  function pricingFromLookup(govId) {
+    const p = PRICING_LOOKUP[govId || ''];
+    if (!p) return { parkHourly: null, parkPriceDetail: null, evChargeDetail: null, evChargeMin: null };
     return {
-      parkHourly,
-      parkPriceDetail: parkHourly != null ? null : (fromRm.parkPriceDetail ?? null),
-      evChargeDetail: fromPc.evChargeDetail ?? fromRm.evChargeDetail ?? null,
-      evChargeMin: fromPc.evChargeMin ?? fromRm.evChargeMin ?? null
+      parkHourly: p.h ?? null,
+      parkPriceDetail: p.d ?? null,
+      evChargeDetail: p.ev ?? null,
+      evChargeMin: p.em ?? null
     };
+  }
+
+  function enrichCarParkPricing(cp) {
+    const govId = cp.govId || cp.id;
+    const lookup = pricingFromLookup(govId);
+    return applyPricingFields(cp, {
+      parkHourly: cp.parkHourly ?? lookup.parkHourly ?? null,
+      parkPriceDetail: cp.parkPriceDetail ?? lookup.parkPriceDetail ?? null,
+      evChargeDetail: cp.evChargeDetail ?? lookup.evChargeDetail ?? null,
+      evChargeMin: cp.evChargeMin ?? lookup.evChargeMin ?? null
+    }, govId);
+  }
+
+  function enrichAllCarParks(list) {
+    return list.map(enrichCarParkPricing);
   }
 
   function govRemarkText(r) {
@@ -504,13 +555,15 @@
   function renderListPrices(cp) {
     const park = parkPriceLabel(cp, true);
     const ev = cp.hasEV ? evPriceLabel(cp, true) : null;
-    if (!park && !ev) return '';
     const parkHtml = park
       ? `<span class="text-slate-500">🅿️ <span class="text-slate-300">${esc(park)}</span></span>`
-      : '';
+      : (cp.website
+          ? `<span class="text-slate-500">🅿️ <a href="${esc(cp.website)}" target="_blank" rel="noopener" class="text-slate-400 underline">查官網</a></span>`
+          : '');
     const evHtml = ev
       ? `<span class="text-slate-500">⚡ <span class="text-emerald-400/90">${esc(ev)}</span></span>`
       : (cp.hasEV ? '<span class="text-slate-600">⚡ 充電價錢未知</span>' : '');
+    if (!parkHtml && !evHtml) return '';
     return `<div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-xs">${parkHtml}${evHtml}</div>`;
   }
 
@@ -518,13 +571,18 @@
     const park = parkPriceLabel(cp, false);
     const ev = cp.hasEV ? evPriceLabel(cp, false) : null;
     const parkLong = park && park.length > 18;
-    if (!park && !ev && !cp.hasEV) return '';
+    const parkWeb = !park && cp.website
+      ? `<a href="${esc(cp.website)}" target="_blank" rel="noopener" class="text-sm font-semibold text-emerald-400 mt-0.5 inline-block">查官網收費 →</a>`
+      : null;
+    if (!park && !ev && !cp.hasEV && !parkWeb) return '';
     return `
       <div class="grid grid-cols-2 gap-3">
         <div class="bg-slate-800 rounded-xl p-3 min-h-[5.5rem]">
           <p class="text-xs text-slate-400">🅿️ 泊車收費</p>
-          <p class="${parkLong ? 'text-sm' : 'text-lg'} font-bold text-slate-200 mt-0.5 leading-snug">${park ? esc(park) : '—'}</p>
-          <p class="text-xs text-slate-500 mt-1">${park ? '政府數據' : '未有公開數據'}</p>
+          ${park
+            ? `<p class="${parkLong ? 'text-sm' : 'text-lg'} font-bold text-slate-200 mt-0.5 leading-snug">${esc(park)}</p>`
+            : (parkWeb || `<p class="text-lg font-bold text-slate-500 mt-0.5">—</p>`)}
+          <p class="text-xs text-slate-500 mt-1">${park ? '政府數據' : (parkWeb ? '以官網為準' : '未有公開數據')}</p>
         </div>
         <div class="bg-slate-800 rounded-xl p-3 min-h-[5.5rem]">
           <p class="text-xs text-slate-400">⚡ 充電收費</p>
@@ -539,22 +597,22 @@
 
   function enrichSeedPark(p) {
     const o = CURATED_OVERRIDES[p.govId] || {};
-    return applyPricingFields({
+    return enrichCarParkPricing(applyPricingFields({
       ...p,
       name: o.name || p.name,
       nameEn: o.nameEn || null,
       note: o.note || p.note || (p.evSpaces ? `政府數據：${p.evSpaces} 個 EV 位` : null),
       hasEV: o.hasEV !== undefined ? o.hasEV : p.hasEV,
       subDistrict: p.subDistrict || ''
-    }, extractPricing({ hourlyCharges: p.parkHourly != null ? [{ price: p.parkHourly }] : [] }), p.govId);
+    }, extractPricing({ hourlyCharges: p.parkHourly != null ? [{ price: p.parkHourly }] : [] }), p.govId));
   }
 
   function buildSeedCarParks() {
     const byId = new Map();
     for (const p of SEED_EV_PARKS) byId.set(p.id, enrichSeedPark(p));
     for (const p of REGION_SEED_PARKS) byId.set(p.id, enrichSeedPark({ ...p, hasEV: false }));
-    for (const extra of CURATED_EXTRAS) byId.set(extra.id, applyPricingFields({ ...extra }, {}, extra.id));
-    return [...byId.values()];
+    for (const extra of CURATED_EXTRAS) byId.set(extra.id, enrichCarParkPricing(applyPricingFields({ ...extra }, {}, extra.id)));
+    return enrichAllCarParks([...byId.values()]);
   }
 
   function seedGovIds() {
@@ -609,8 +667,13 @@
       evSpaces,
       note: o.note || (hasEV && evSpaces ? `政府數據：${evSpaces} 個 EV 位` : null),
       district: r.district || r.address?.dcDistrict || '',
-      subDistrict: r.address?.subDistrict || ''
-    }, mergePricing(extractPricing(pc), extractPricingFromRemark(govRemarkText(r))), govId);
+      subDistrict: r.address?.subDistrict || '',
+      website: r.website || null
+    }, mergePricingSources(
+      extractPricing(pc),
+      extractPricingFromRemark(govRemarkText(r)),
+      pricingFromLookup(govId)
+    ), govId);
   }
 
   async function fetchCarParkInfo(force = false) {
@@ -624,21 +687,21 @@
     setStatus('正在載入全港停車場…');
     try {
       const res = await fetch(
-        `${API_BASE}?data=info&vehicleTypes=privateCar&extent=${hkExtentStr()}&lang=zh_TW`
+        `${API_BASE}?data=info&vehicleTypes=privateCar&lang=zh_TW`
       );
       if (!res.ok) throw new Error('API ' + res.status);
       const json = await res.json();
       const byId = new Map();
       for (const r of json.results || []) byId.set(String(r.park_Id), buildCarParkFromGov(r));
-      for (const extra of CURATED_EXTRAS) byId.set(extra.id, { ...extra });
-      CARPARKS = [...byId.values()];
+      for (const extra of CURATED_EXTRAS) byId.set(extra.id, enrichCarParkPricing({ ...extra }));
+      CARPARKS = enrichAllCarParks([...byId.values()]);
       saveCarParkCache(CARPARKS);
       return true;
     } catch (err) {
       console.warn('Car park info fetch failed:', err);
       const cached = loadCarParkCache();
       if (cached?.length) {
-        CARPARKS = cached;
+        CARPARKS = enrichAllCarParks(cached);
         setStatus('使用快取嘅停車場資料');
         return false;
       }
@@ -1226,9 +1289,11 @@
     const cachedVacancy = loadVacancyCache();
     if (cachedVacancy) vacancyMap = cachedVacancy;
 
+    await loadPricingLookup();
+
     if (cachedParks?.length) {
       // 有快取：直接全港模式，幾乎即時
-      CARPARKS = cachedParks;
+      CARPARKS = enrichAllCarParks(cachedParks);
       fullDataReady = true;
       bootstrapActive = false;
       restoreLastPosition();
